@@ -5,7 +5,11 @@ const DEFAULT_VISION_MODEL = process.env.GROK_VISION_MODEL || '';
 
 function normalizeBaseUrl(baseUrl) {
   if (!baseUrl) return '';
-  return baseUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
+  let url = baseUrl.replace(/\/+$/, '');
+  while (url.endsWith('/v1')) {
+    url = url.slice(0, -3); // remove the trailing "/v1"
+  }
+  return url;
 }
 
 const systemPrompt = `You are a Discord assistant named {BOT_NAME}.
