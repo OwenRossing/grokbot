@@ -184,9 +184,50 @@ function isPrivateIp(address) {
     return false;
   }
   if (net.isIPv6(address)) {
-    if (address === '::1') return true;
-    if (address.startsWith('fc') || address.startsWith('fd')) return true;
-    if (address.startsWith('fe80')) return true;
+    // Normalize to lowercase for consistent checking
+    const normalized = address.toLowerCase();
+    
+    // Parse the IPv6 address to handle various representations
+    // For loopback, check common representations
+    if (normalized === '::1' || 
+        normalized === '0:0:0:0:0:0:0:1' ||
+        normalized === '0000:0000:0000:0000:0000:0000:0000:0001') {
+      return true;
+    }
+    
+    // For other private ranges, we need to check if they START with the private prefix
+    // Unique Local Addresses (ULA): fc00::/7 and Link-local: fe80::/10
+    
+    // Split the address into segments
+    const segments = normalized.split(':');
+    
+    // If the address starts with '::', the first actual segment is at index 0 or 1
+    // but represents zeros. We need the first NON-ZERO segment that's actually first.
+    // However, if it starts with '::' followed by something, that something is NOT
+    // the first segment of the expanded address.
+    
+    // Check if it starts with fc, fd, or fe80 (not preceded by ::)
+    if (normalized.startsWith('fc') || normalized.startsWith('fd')) {
+      // Extract first segment to validate it's in the right range
+      const firstSegment = segments[0];
+      if (firstSegment) {
+        const firstHex = parseInt(firstSegment, 16);
+        if (!isNaN(firstHex) && firstHex >= 0xfc00 && firstHex <= 0xfdff) {
+          return true;
+        }
+      }
+    }
+    
+    if (normalized.startsWith('fe')) {
+      const firstSegment = segments[0];
+      if (firstSegment) {
+        const firstHex = parseInt(firstSegment, 16);
+        // Link-local: fe80::/10 covers fe80-febf
+        if (!isNaN(firstHex) && firstHex >= 0xfe80 && firstHex <= 0xfebf) {
+          return true;
+        }
+      }
+    }
   }
   return false;
 }
