@@ -195,19 +195,37 @@ function isPrivateIp(address) {
       return true;
     }
     
-    // For other private ranges, check the first segment
+    // For other private ranges, we need to check if they START with the private prefix
     // Unique Local Addresses (ULA): fc00::/7 and Link-local: fe80::/10
-    const segments = normalized.split(':');
-    const firstSegment = segments[0];
     
-    if (firstSegment && firstSegment !== '') {
-      const firstHex = parseInt(firstSegment, 16);
-      if (!isNaN(firstHex)) {
-        // fc00::/7 covers fc00-fdff (0xfc00-0xfdff in first 16 bits)
-        if (firstHex >= 0xfc00 && firstHex <= 0xfdff) return true;
-        // Link-local addresses: fe80::/10
-        // This covers fe80-febf (0xfe80-0xfebf in first 16 bits)
-        if (firstHex >= 0xfe80 && firstHex <= 0xfebf) return true;
+    // Split the address into segments
+    const segments = normalized.split(':');
+    
+    // If the address starts with '::', the first actual segment is at index 0 or 1
+    // but represents zeros. We need the first NON-ZERO segment that's actually first.
+    // However, if it starts with '::' followed by something, that something is NOT
+    // the first segment of the expanded address.
+    
+    // Check if it starts with fc, fd, or fe80 (not preceded by ::)
+    if (normalized.startsWith('fc') || normalized.startsWith('fd')) {
+      // Extract first segment to validate it's in the right range
+      const firstSegment = segments[0];
+      if (firstSegment) {
+        const firstHex = parseInt(firstSegment, 16);
+        if (!isNaN(firstHex) && firstHex >= 0xfc00 && firstHex <= 0xfdff) {
+          return true;
+        }
+      }
+    }
+    
+    if (normalized.startsWith('fe')) {
+      const firstSegment = segments[0];
+      if (firstSegment) {
+        const firstHex = parseInt(firstSegment, 16);
+        // Link-local: fe80::/10 covers fe80-febf
+        if (!isNaN(firstHex) && firstHex >= 0xfe80 && firstHex <= 0xfebf) {
+          return true;
+        }
       }
     }
   }
