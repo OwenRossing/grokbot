@@ -291,7 +291,7 @@ async function handlePrompt({
     if (!memoryContent && replyContextText) {
       memoryContent = 'User replied to a message.';
     }
-    if (imageUrls?.length) {
+    if (imageUrls?.length && memoryContent && !/\bimage\b/i.test(memoryContent)) {
       memoryContent = `${memoryContent} [shared ${imageUrls.length} image(s)]`;
     }
     recordUserMessage({ userId, channelId, content: memoryContent });
