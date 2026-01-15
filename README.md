@@ -33,7 +33,7 @@ Required vars:
 Optional:
 - `GROK_MODEL` (default: `grok-beta`)
 - `GROK_VISION_MODEL` (required for image understanding)
-- `BOT_NAME` (default: `GrokBuddy`)
+- `BOT_NAME` (default: `Grok`)
 - `SUPER_ADMIN_USER_ID` (bypasses channel permission checks)
 
 ### 3) Run
