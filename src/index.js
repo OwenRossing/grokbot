@@ -305,10 +305,16 @@ async function handlePrompt({
       if (dataUrl) imageInputs.push(dataUrl);
     }
   }
-  const effectivePrompt =
-    prompt ||
-    (imageInputs.length ? 'User sent an image.' : '') ||
-    (replyContextText ? 'Following up on the replied message.' : '');
+  let effectivePrompt;
+  if (typeof prompt === 'string' && prompt !== '') {
+    effectivePrompt = prompt;
+  } else if (imageInputs.length > 0) {
+    effectivePrompt = 'User sent an image.';
+  } else if (typeof replyContextText === 'string' && replyContextText.trim() !== '') {
+    effectivePrompt = 'Following up on the replied message.';
+  } else {
+    effectivePrompt = '';
+  }
   const recentTurns = effectivePrompt
     ? addTurn(userId, 'user', effectivePrompt)
     : addTurn(userId, 'user', '...');
