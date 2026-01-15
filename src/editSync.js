@@ -3,10 +3,20 @@ const EDIT_THROTTLE_MS = 2000;
 
 const editState = new Map();
 
+function cleanupExpiredEntries(now) {
+  for (const [userMessageId, entry] of editState) {
+    if (now - entry.createdAt > EDIT_WINDOW_MS) {
+      editState.delete(userMessageId);
+    }
+  }
+}
+
 export function trackReply({ userMessageId, botReplyId }) {
+  const now = Date.now();
+  cleanupExpiredEntries(now);
   editState.set(userMessageId, {
     botReplyId,
-    createdAt: Date.now(),
+    createdAt: now,
     lastEditAt: 0,
   });
 }
