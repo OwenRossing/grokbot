@@ -51,6 +51,8 @@ const client = new Client({
 });
 
 const inMemoryTurns = new Map();
+const TURNS_TTL_MS = 60 * 60 * 1000; // 1 hour
+const MAX_TURNS_SIZE = 10000;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_IMAGES = 4;
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif)(\?.*)?$/i;
@@ -114,10 +116,31 @@ function stripMention(content) {
 }
 
 function addTurn(userId, role, content) {
-  const turns = inMemoryTurns.get(userId) || [];
+  const now = Date.now();
+  cleanupTurns(now);
+  const entry = inMemoryTurns.get(userId);
+  const turns = entry ? entry.turns : [];
   const updated = [...turns, { role, content }].slice(-6);
-  inMemoryTurns.set(userId, updated);
+  inMemoryTurns.set(userId, { turns: updated, lastAt: now });
   return updated;
+}
+
+function cleanupTurns(now) {
+  // Remove entries that have been inactive for longer than TURNS_TTL_MS
+  for (const [userId, entry] of inMemoryTurns) {
+    if (now - entry.lastAt > TURNS_TTL_MS) {
+      inMemoryTurns.delete(userId);
+    }
+  }
+
+  // If the map is still too large, evict oldest entries until under the limit
+  if (inMemoryTurns.size > MAX_TURNS_SIZE) {
+    const sorted = Array.from(inMemoryTurns.entries()).sort((a, b) => a[1].lastAt - b[1].lastAt);
+    const toDelete = sorted.slice(0, inMemoryTurns.size - MAX_TURNS_SIZE);
+    for (const [userId] of toDelete) {
+      inMemoryTurns.delete(userId);
+    }
+  }
 }
 
 function isDM(message) {
