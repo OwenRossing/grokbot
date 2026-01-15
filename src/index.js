@@ -349,6 +349,9 @@ async function handlePrompt({
   if (!effectivePrompt && replyContextText) {
     effectivePrompt = 'Following up on the replied message.';
   }
+  if (!effectivePrompt) {
+    effectivePrompt = '...';
+  }
   const recentTurns = addTurn(userId, 'user', effectivePrompt);
   const response = await getLLMResponse({
     botName: BOT_NAME,
