@@ -70,7 +70,7 @@ Replying to another message with an image also works:
 - `/memory-reset-user <user>` — admin-only: wipe memory for a user
 
 ### Channel allowlist (guild admins)
-Memory starts disabled for all **guild channels**. Memory writes only occur in allowlisted guild channels (and DMs when a user has memory enabled), where the bot also passively logs messages (no replies or LLM calls). Use:
+Memory starts disabled for all **guild channels**. In allowlisted guild channels, the bot passively records all messages from users who have memory enabled, regardless of whether the bot is mentioned or responds. This provides channel and server context for the bot. Use:
 - `/memory-allow <channel>`
 - `/memory-deny <channel>`
 - `/memory-list`

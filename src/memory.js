@@ -23,6 +23,7 @@ import Database from 'better-sqlite3';
  */
 
 const db = new Database('data.db');
+const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS user_settings (
@@ -71,30 +72,102 @@ db.exec(`
   );
 `);
 
+function isDuplicateColumnError(error) {
+  return (
+    error &&
+    typeof error.message === 'string' &&
+    error.message.includes('duplicate column name')
+  );
+}
+
 try {
   db.exec('ALTER TABLE user_messages ADD COLUMN guild_id TEXT');
-} catch {}
+} catch (err) {
+  if (!isDuplicateColumnError(err)) {
+    console.error(
+      'Failed to run migration: ALTER TABLE user_messages ADD COLUMN guild_id TEXT',
+      err
+    );
+    throw err;
+  }
+}
 try {
   db.exec('ALTER TABLE user_settings ADD COLUMN message_count INTEGER DEFAULT 0');
-} catch {}
+} catch (err) {
+  if (!isDuplicateColumnError(err)) {
+    console.error(
+      'Failed to run migration: ALTER TABLE user_settings ADD COLUMN message_count INTEGER DEFAULT 0',
+      err
+    );
+    throw err;
+  }
+}
 try {
   db.exec('ALTER TABLE user_settings ADD COLUMN last_summary_at INTEGER DEFAULT 0');
-} catch {}
+} catch (err) {
+  if (!isDuplicateColumnError(err)) {
+    console.error(
+      'Failed to run migration: ALTER TABLE user_settings ADD COLUMN last_summary_at INTEGER DEFAULT 0',
+      err
+    );
+    throw err;
+  }
+}
 try {
   db.exec('ALTER TABLE channel_profiles ADD COLUMN guild_id TEXT');
-} catch {}
+} catch (err) {
+  if (!isDuplicateColumnError(err)) {
+    console.error(
+      'Failed to run migration: ALTER TABLE channel_profiles ADD COLUMN guild_id TEXT',
+      err
+    );
+    throw err;
+  }
+}
 try {
   db.exec('ALTER TABLE channel_profiles ADD COLUMN message_count INTEGER DEFAULT 0');
-} catch {}
+} catch (err) {
+  if (!isDuplicateColumnError(err)) {
+    console.error(
+      'Failed to run migration: ALTER TABLE channel_profiles ADD COLUMN message_count INTEGER DEFAULT 0',
+      err
+    );
+    throw err;
+  }
+}
 try {
   db.exec('ALTER TABLE channel_profiles ADD COLUMN last_summary_at INTEGER DEFAULT 0');
-} catch {}
+} catch (err) {
+  if (!isDuplicateColumnError(err)) {
+    console.error(
+      'Failed to run migration: ALTER TABLE channel_profiles ADD COLUMN last_summary_at INTEGER DEFAULT 0',
+      err
+    );
+    throw err;
+  }
+}
 try {
   db.exec('ALTER TABLE guild_profiles ADD COLUMN message_count INTEGER DEFAULT 0');
-} catch {}
+} catch (err) {
+  if (!isDuplicateColumnError(err)) {
+    console.error(
+      'Failed to run migration: ALTER TABLE guild_profiles ADD COLUMN message_count INTEGER DEFAULT 0',
+      err
+    );
+    throw err;
+  }
+}
 try {
   db.exec('ALTER TABLE guild_profiles ADD COLUMN last_summary_at INTEGER DEFAULT 0');
-} catch {}
+} catch (err) {
+  if (!isDuplicateColumnError(err)) {
+    console.error(
+      'Failed to run migration: ALTER TABLE guild_profiles ADD COLUMN last_summary_at INTEGER DEFAULT 0',
+      err
+    );
+    throw err;
+  }
+}
 
 const insertMessageStmt = db.prepare(
   'INSERT INTO user_messages (user_id, channel_id, guild_id, content, created_at) VALUES (?, ?, ?, ?, ?)'
@@ -148,7 +221,7 @@ const recentMessagesStmt = db.prepare(
   'SELECT content FROM user_messages WHERE user_id = ? ORDER BY created_at DESC LIMIT ?'
 );
 const recentChannelMessagesStmt = db.prepare(
-  'SELECT content FROM user_messages WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?'
+  'SELECT content FROM user_messages WHERE channel_id = ? AND user_id != ? ORDER BY created_at DESC LIMIT ?'
 );
 const getChannelProfileStmt = db.prepare(
   'SELECT channel_id, guild_id, summary, message_count, last_summary_at FROM channel_profiles WHERE channel_id = ?'
@@ -181,7 +254,7 @@ const upsertGuildUserStmt = db.prepare(`
     last_seen_at = excluded.last_seen_at
 `);
 const listGuildUsersStmt = db.prepare(
-  'SELECT display_name FROM guild_users WHERE guild_id = ? ORDER BY last_seen_at DESC LIMIT ?'
+  "SELECT display_name FROM guild_users WHERE guild_id = ? AND last_seen_at > (strftime('%s', 'now') - 30 * 24 * 60 * 60) ORDER BY last_seen_at DESC LIMIT ?"
 );
 
 const SUMMARY_HINTS = [
@@ -297,14 +370,15 @@ export function isChannelAllowed(channelId) {
   return row?.enabled === 1;
 }
 
-export function recordUserMessage({ userId, channelId, guildId, content, displayName }) {
+export const recordUserMessage = db.transaction(({ userId, channelId, guildId, content, displayName }) => {
   insertMessageStmt.run(userId, channelId, guildId, content, Date.now());
   const notes = extractSummaryNotes(content);
   const current = getUserSettings(userId);
   const nextCount = (current.message_count || 0) + 1;
-  const summaryDue =
-    nextCount % 20 === 0 || Date.now() - (current.last_summary_at || 0) > 24 * 60 * 60 * 1000;
-  const updatedSummary = summaryDue
+  const timeSinceLastSummary = Date.now() - (current.last_summary_at || 0);
+  const shouldUpdateSummary = notes.length > 0 || timeSinceLastSummary > TWENTY_FOUR_HOURS_MS;
+  const summaryDue = (notes.length > 0 && nextCount % 20 === 0) || timeSinceLastSummary > TWENTY_FOUR_HOURS_MS;
+  const updatedSummary = summaryDue && shouldUpdateSummary
     ? normalizeSummary(current.profile_summary || '', notes)
     : current.profile_summary || '';
   const updatedLastSummaryAt = summaryDue ? Date.now() : current.last_summary_at || 0;
@@ -330,10 +404,12 @@ export function recordUserMessage({ userId, channelId, guildId, content, display
         last_summary_at: 0,
       };
     const channelCount = (channelProfile.message_count || 0) + 1;
+    const channelTimeSinceLastSummary = Date.now() - (channelProfile.last_summary_at || 0);
+    const channelShouldUpdateSummary = notes.length > 0 || channelTimeSinceLastSummary > TWENTY_FOUR_HOURS_MS;
     const channelSummaryDue =
-      channelCount % 20 === 0 ||
-      Date.now() - (channelProfile.last_summary_at || 0) > 24 * 60 * 60 * 1000;
-    const channelSummary = channelSummaryDue
+      (notes.length > 0 && channelCount % 20 === 0) ||
+      channelTimeSinceLastSummary > TWENTY_FOUR_HOURS_MS;
+    const channelSummary = channelSummaryDue && channelShouldUpdateSummary
       ? normalizeSummary(channelProfile.summary || '', notes)
       : channelProfile.summary || '';
     const channelLastSummaryAt = channelSummaryDue
@@ -357,10 +433,12 @@ export function recordUserMessage({ userId, channelId, guildId, content, display
         last_summary_at: 0,
       };
     const guildCount = (guildProfile.message_count || 0) + 1;
+    const guildTimeSinceLastSummary = Date.now() - (guildProfile.last_summary_at || 0);
+    const guildShouldUpdateSummary = notes.length > 0 || guildTimeSinceLastSummary > TWENTY_FOUR_HOURS_MS;
     const guildSummaryDue =
-      guildCount % 30 === 0 ||
-      Date.now() - (guildProfile.last_summary_at || 0) > 24 * 60 * 60 * 1000;
-    const guildSummary = guildSummaryDue
+      (notes.length > 0 && guildCount % 30 === 0) ||
+      guildTimeSinceLastSummary > TWENTY_FOUR_HOURS_MS;
+    const guildSummary = guildSummaryDue && guildShouldUpdateSummary
       ? normalizeSummary(guildProfile.summary || '', notes)
       : guildProfile.summary || '';
     const guildLastSummaryAt = guildSummaryDue
@@ -368,7 +446,7 @@ export function recordUserMessage({ userId, channelId, guildId, content, display
       : guildProfile.last_summary_at || 0;
     upsertGuildProfileStmt.run(guildId, guildSummary, guildCount, guildLastSummaryAt);
   }
-}
+});
 
 export function getProfileSummary(userId) {
   const current = getUserSettings(userId);
@@ -382,9 +460,9 @@ export function getRecentMessages(userId, limit = 4) {
     .filter(Boolean);
 }
 
-export function getRecentChannelMessages(channelId, limit = 4) {
+export function getRecentChannelMessages(channelId, excludeUserId, limit = 4) {
   return recentChannelMessagesStmt
-    .all(channelId, limit)
+    .all(channelId, excludeUserId, limit)
     .map((row) => row.content)
     .filter(Boolean);
 }

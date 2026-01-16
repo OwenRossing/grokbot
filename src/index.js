@@ -265,9 +265,12 @@ function isPrivateIp(address) {
     return false;
   }
   if (net.isIPv6(address)) {
-    if (address === '::1') return true;
-    if (address.startsWith('fc') || address.startsWith('fd')) return true;
-    if (address.startsWith('fe80')) return true;
+    const lower = address.toLowerCase();
+    if (lower === '::1') return true;
+    // Check for unique local addresses (fc00::/7 range)
+    if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
+    // Check for link-local addresses (fe80::/10 range)
+    if (lower.startsWith('fe80')) return true;
   }
   return false;
 }
@@ -350,7 +353,7 @@ async function handlePrompt({
   replyContextText,
   imageUrls,
   allowMemory,
-  skipMemoryWrite = false,
+  alreadyRecorded = false,
   onTyping,
   displayName,
 }) {
@@ -367,16 +370,15 @@ async function handlePrompt({
   }
 
   const settings = getUserSettings(userId);
-  if (settings.memory_enabled && allowMemory && !skipMemoryWrite) {
-    let memoryContent = prompt;
+  if (settings.memory_enabled && allowMemory && !alreadyRecorded) {
+    let memoryContent = prompt || '';
     if (!memoryContent && imageUrls?.length) {
-      memoryContent = 'User sent an image.';
+      memoryContent = `User sent ${imageUrls.length} image(s).`;
+    } else if (imageUrls?.length) {
+      memoryContent = `${memoryContent} [shared ${imageUrls.length} image(s)]`;
     }
     if (!memoryContent && replyContextText) {
       memoryContent = 'User replied to a message.';
-    }
-    if (imageUrls?.length) {
-      memoryContent = `${memoryContent} [shared ${imageUrls.length} image(s)]`;
     }
     recordUserMessage({
       userId,
@@ -388,9 +390,9 @@ async function handlePrompt({
   }
 
   const profileSummary = allowMemory ? getProfileSummary(userId) : '';
-  const relevantMessages = allowMemory ? getRecentMessages(userId, 3) : [];
-  const channelMessages =
-    allowMemory && channelId ? getRecentChannelMessages(channelId, 3) : [];
+  const recentUserMessages = allowMemory ? getRecentMessages(userId, 3) : [];
+  const recentChannelMessages =
+    allowMemory && channelId ? getRecentChannelMessages(channelId, userId, 3) : [];
   const channelSummary =
     allowMemory && channelId ? getChannelSummary(channelId) : '';
   const guildSummary = allowMemory && guildId ? getGuildSummary(guildId) : '';
@@ -402,10 +404,15 @@ async function handlePrompt({
       if (dataUrl) imageInputs.push(dataUrl);
     }
   }
-  const effectivePrompt =
-    prompt ||
-    (imageInputs.length ? 'User sent an image.' : '') ||
-    (replyContextText ? 'Following up on the replied message.' : '');
+  
+  // Determine effective prompt for the LLM
+  let effectivePrompt = prompt;
+  if (!effectivePrompt && imageInputs.length > 0) {
+    effectivePrompt = 'User sent an image.';
+  } else if (!effectivePrompt && replyContextText) {
+    effectivePrompt = 'Following up on the replied message.';
+  }
+  
   const recentTurns = allowMemory
     ? addTurn(userId, 'user', effectivePrompt || '...')
     : [];
@@ -419,8 +426,8 @@ async function handlePrompt({
     userContent: effectivePrompt,
     replyContext: replyContextText,
     imageInputs,
-    relevantMessages,
-    channelMessages,
+    recentUserMessages,
+    recentChannelMessages,
     channelSummary,
     guildSummary,
     knownUsers,
@@ -439,12 +446,14 @@ client.on('messageCreate', async (message) => {
     const settings = getUserSettings(message.author.id);
     const allowMemoryContext = memoryChannel && settings.memory_enabled;
     const displayName = message.member?.displayName || message.author.username;
-    if (allowMemoryContext) {
+    
+    // Passively record messages in allowlisted channels only from users who have memory enabled
+    if (allowMemoryContext && message.content && message.content.trim()) {
       recordUserMessage({
         userId: message.author.id,
         channelId: message.channelId,
         guildId: message.guildId,
-        content: message.content || '',
+        content: message.content,
         displayName,
       });
     }
@@ -480,7 +489,7 @@ client.on('messageCreate', async (message) => {
       replyContextText,
       imageUrls,
       allowMemory: allowMemoryContext,
-      skipMemoryWrite: allowMemoryContext,
+      alreadyRecorded: allowMemoryContext,
       onTyping: typingFn,
       displayName,
     });
@@ -492,13 +501,26 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
     if (!newMessage) return;
     const hydrated = newMessage.partial ? await newMessage.fetch() : newMessage;
     if (hydrated.author?.bot) return;
-    if (!shouldHandleEdit(hydrated.id)) return;
 
     const isDirect = isDM(hydrated);
     const memoryChannel = isMemoryEnabledChannel(hydrated);
     const settings = getUserSettings(hydrated.author.id);
     const allowMemoryContext = memoryChannel && settings.memory_enabled;
     const displayName = hydrated.member?.displayName || hydrated.author.username;
+
+    // Passively record edited messages in allowlisted channels
+    if (allowMemoryContext && hydrated.content && hydrated.content.trim()) {
+      recordUserMessage({
+        userId: hydrated.author.id,
+        channelId: hydrated.channelId,
+        guildId: hydrated.guildId,
+        content: hydrated.content,
+        displayName,
+      });
+    }
+
+    if (!shouldHandleEdit(hydrated.id)) return;
+
     const mentioned = hydrated.mentions.has(client.user);
     if (!isDirect && !mentioned) return;
 
@@ -535,6 +557,7 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
       replyContextText,
       imageUrls,
       allowMemory: allowMemoryContext,
+      alreadyRecorded: allowMemoryContext,
       onTyping: typingFn,
       displayName,
     });
@@ -590,6 +613,17 @@ client.on('interactionCreate', async (interaction) => {
         }
       };
 
+      // Passively record /ask messages in allowlisted channels
+      if (allowMemoryContext && question && question.trim()) {
+        recordUserMessage({
+          userId: interaction.user.id,
+          channelId: interaction.channelId,
+          guildId: interaction.guildId,
+          content: question,
+          displayName,
+        });
+      }
+
       await handlePrompt({
         userId: interaction.user.id,
         guildId: interaction.guildId,
@@ -599,6 +633,7 @@ client.on('interactionCreate', async (interaction) => {
         replyContextText: '',
         imageUrls: [],
         allowMemory: allowMemoryContext,
+        alreadyRecorded: allowMemoryContext,
         onTyping: typingFn,
         displayName,
       });
@@ -661,9 +696,14 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.reply({ content: 'Admin only.', ephemeral: true });
         return;
       }
-      const rows = listChannels();
+      const allRows = listChannels();
+      // Filter to only show channels from the current guild
+      const guild = interaction.guild;
+      const guildChannelIds = new Set(guild.channels.cache.keys());
+      const rows = allRows.filter((row) => guildChannelIds.has(row.channel_id));
+      
       if (!rows.length) {
-        await interaction.reply({ content: 'No channels configured.' });
+        await interaction.reply({ content: 'No channels configured in this guild.' });
         return;
       }
       const formatted = rows
@@ -710,7 +750,17 @@ client.on('interactionCreate', async (interaction) => {
       }
       const user = interaction.options.getUser('user', true);
       forgetUser(user.id);
-      await interaction.reply({ content: `Memory reset for ${user.username}.` });
+      await interaction.reply({ content: `Memory reset for ${user.username}. This action has been logged.` });
+      
+      // Attempt to notify the user via DM
+      try {
+        await user.send(
+          `Your conversation memory and personality profile have been reset by an administrator in ${interaction.guild.name}.`
+        );
+      } catch (dmErr) {
+        // User may have DMs disabled or blocked the bot, which is fine
+        console.log(`Could not send DM to user ${user.username} about memory reset:`, dmErr.message);
+      }
     }
   });
 });
