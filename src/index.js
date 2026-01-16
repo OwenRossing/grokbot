@@ -60,11 +60,40 @@ function setupProcessGuards() {
   });
 }
 
-async function safeExecute(label, fn) {
+async function safeExecute(label, fn, context) {
   try {
     await fn();
   } catch (err) {
     console.error(`Handler error (${label}):`, err);
+
+    // Attempt to notify the user that an error occurred, if we have context.
+    if (!context) {
+      return;
+    }
+
+    try {
+      // Discord interactions (e.g. slash commands)
+      if (typeof context.isRepliable === 'function' && context.isRepliable()) {
+        const replyPayload = {
+          content: 'An unexpected error occurred while processing your request. Please try again later.',
+          ephemeral: true,
+        };
+
+        if (context.deferred || context.replied) {
+          await context.followUp(replyPayload);
+        } else {
+          await context.reply(replyPayload);
+        }
+        return;
+      }
+
+      // Fallback for message-based contexts
+      if (typeof context.reply === 'function') {
+        await context.reply('An unexpected error occurred while processing your request. Please try again later.');
+      }
+    } catch (notifyErr) {
+      console.error('Failed to send error response to user:', notifyErr);
+    }
   }
 }
 
