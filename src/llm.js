@@ -15,7 +15,7 @@ function normalizeBaseUrl(baseUrl) {
 const systemPrompt = `system prompt here`;
 
 const fallbackErrorLine =
-  'cant answer rn bro too busy gooning (grok servers left like my dad)';
+  'cant answer rn bro too busy gooning (grok api error)';
 
 function buildMessages({
   botName,
