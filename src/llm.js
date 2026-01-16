@@ -7,7 +7,7 @@ function normalizeBaseUrl(baseUrl) {
   if (!baseUrl) return '';
   let url = baseUrl.replace(/\/+$/, '');
   while (url.endsWith('/v1')) {
-    url = url.slice(0, -3); // remove the trailing "/v1"
+    url = url.slice(0, -3);
   }
   return url;
 }
@@ -24,6 +24,11 @@ function buildMessages({
   userContent,
   replyContext,
   imageInputs,
+  recentUserMessages,
+  recentChannelMessages,
+  channelSummary,
+  guildSummary,
+  knownUsers,
 }) {
   const messages = [
     {
@@ -43,6 +48,43 @@ function buildMessages({
     messages.push({
       role: 'system',
       content: `User profile summary: ${profileSummary}`,
+    });
+  }
+
+  if (recentUserMessages?.length) {
+    const formatted = recentUserMessages.map((msg) => `- ${msg}`).join('\n');
+    messages.push({
+      role: 'system',
+      content: `Recent user messages:\n${formatted}`,
+    });
+  }
+
+  if (channelSummary) {
+    messages.push({
+      role: 'system',
+      content: `Channel summary: ${channelSummary}`,
+    });
+  }
+
+  if (guildSummary) {
+    messages.push({
+      role: 'system',
+      content: `Server summary: ${guildSummary}`,
+    });
+  }
+
+  if (knownUsers?.length) {
+    messages.push({
+      role: 'system',
+      content: `Known users in this server: ${knownUsers.join(', ')}`,
+    });
+  }
+
+  if (recentChannelMessages?.length) {
+    const formatted = recentChannelMessages.map((msg) => `- ${msg}`).join('\n');
+    messages.push({
+      role: 'system',
+      content: `Recent channel messages:\n${formatted}`,
     });
   }
 
@@ -74,6 +116,11 @@ async function callOnce({
   userContent,
   replyContext,
   imageInputs,
+  recentUserMessages,
+  recentChannelMessages,
+  channelSummary,
+  guildSummary,
+  knownUsers,
 }) {
   const model = imageInputs?.length ? DEFAULT_VISION_MODEL || DEFAULT_MODEL : DEFAULT_MODEL;
   const baseUrl = normalizeBaseUrl(process.env.GROK_BASE_URL);
@@ -94,6 +141,11 @@ async function callOnce({
         userContent,
         replyContext,
         imageInputs,
+        recentUserMessages,
+        recentChannelMessages,
+        channelSummary,
+        guildSummary,
+        knownUsers,
       }),
     }),
   });
@@ -122,6 +174,11 @@ export async function getLLMResponse({
   userContent,
   replyContext,
   imageInputs,
+  recentUserMessages,
+  recentChannelMessages,
+  channelSummary,
+  guildSummary,
+  knownUsers,
 }) {
   try {
     return await callOnce({
@@ -131,6 +188,11 @@ export async function getLLMResponse({
       userContent,
       replyContext,
       imageInputs,
+      recentUserMessages,
+      recentChannelMessages,
+      channelSummary,
+      guildSummary,
+      knownUsers,
     });
   } catch (err) {
     if (err?.code === 'VISION_UNSUPPORTED') {
@@ -145,6 +207,11 @@ export async function getLLMResponse({
         userContent,
         replyContext,
         imageInputs,
+        recentUserMessages,
+        recentChannelMessages,
+        channelSummary,
+        guildSummary,
+        knownUsers,
       });
     } catch (retryErr) {
       if (retryErr?.code === 'VISION_UNSUPPORTED') {

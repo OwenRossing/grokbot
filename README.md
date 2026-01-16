@@ -66,9 +66,11 @@ Replying to another message with an image also works:
 - `/memory off` — disable memory
 - `/memory forget` — wipe stored history
 - `/memory view` — view the stored summary
+- `/memory-reset-guild` — admin-only: wipe memory for this guild
+- `/memory-reset-user <user>` — admin-only: wipe memory for a user
 
 ### Channel allowlist (guild admins)
-Memory starts disabled for all **guild channels**. Use:
+Memory starts disabled for all **guild channels**. In allowlisted guild channels, the bot passively records all messages from users who have memory enabled, regardless of whether the bot is mentioned or responds. This provides channel and server context for the bot. Use:
 - `/memory-allow <channel>`
 - `/memory-deny <channel>`
 - `/memory-list`
@@ -76,9 +78,10 @@ Memory starts disabled for all **guild channels**. Use:
 DMs are allowed for memory writes when the user has memory enabled.
 
 ## Notes
-- The bot stores full user messages **only** from allowed channels.
-- A short in-memory window of recent turns is used for context.
-- A lightweight summary is kept per user and sent to Grok.
+- The bot stores full user messages **only** from allowlisted channels.
+- Responses in non-allowlisted channels are stateless (only the triggering message + reply context).
+- A short in-memory window of recent turns plus lightweight user/channel/server summaries are used in allowlisted channels.
+- The bot keeps a small cache of known display names per server to make references feel more natural.
 - Hate speech and protected-class harassment are blocked before the LLM.
 
 ## Data storage

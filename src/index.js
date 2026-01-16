@@ -16,9 +16,16 @@ import {
   isChannelAllowed,
   listChannels,
   recordUserMessage,
+  resetGuildMemory,
+  resetChannelMemory,
   setUserMemory,
   forgetUser,
   viewMemory,
+  getRecentMessages,
+  getRecentChannelMessages,
+  getChannelSummary,
+  getGuildSummary,
+  getGuildUserNames,
 } from './memory.js';
 import { getLLMResponse } from './llm.js';
 import { checkRateLimit } from './rateLimit.js';
@@ -33,6 +40,62 @@ const {
   BOT_NAME = 'GrokBuddy',
   SUPER_ADMIN_USER_ID,
 } = process.env;
+
+const DISCORD_INTERACTION_EXPIRED_CODE = 10062;
+
+function setupProcessGuards() {
+  process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled rejection:', reason);
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('Uncaught exception:', err);
+  });
+  process.on('SIGTERM', () => {
+    console.log('SIGTERM received. Closing Discord client.');
+    client.destroy();
+  });
+  process.on('SIGINT', () => {
+    console.log('SIGINT received. Closing Discord client.');
+    client.destroy();
+  });
+}
+
+async function safeExecute(label, fn, context) {
+  try {
+    await fn();
+  } catch (err) {
+    console.error(`Handler error (${label}):`, err);
+
+    // Attempt to notify the user that an error occurred, if we have context.
+    if (!context) {
+      return;
+    }
+
+    try {
+      // Discord interactions (e.g. slash commands)
+      if (typeof context.isRepliable === 'function' && context.isRepliable()) {
+        const replyPayload = {
+          content: 'An unexpected error occurred while processing your request. Please try again later.',
+          ephemeral: true,
+        };
+
+        if (context.deferred || context.replied) {
+          await context.followUp(replyPayload);
+        } else {
+          await context.reply(replyPayload);
+        }
+        return;
+      }
+
+      // Fallback for message-based contexts
+      if (typeof context.reply === 'function') {
+        await context.reply('An unexpected error occurred while processing your request. Please try again later.');
+      }
+    } catch (notifyErr) {
+      console.error('Failed to send error response to user:', notifyErr);
+    }
+  }
+}
 
 if (!DISCORD_TOKEN || !GROK_BASE_URL || !GROK_API_KEY) {
   console.error('Missing required env vars. Check README.');
@@ -96,6 +159,24 @@ const slashCommands = [
     .setName('memory-list')
     .setDescription('List channels with memory permissions')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder()
+    .setName('memory-reset-guild')
+    .setDescription('Reset memory for this guild')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder()
+    .setName('memory-reset-channel')
+    .setDescription('Reset memory for a specific channel')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addChannelOption((option) =>
+      option.setName('channel').setDescription('Channel to reset').setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName('memory-reset-user')
+    .setDescription('Reset memory for a user')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addUserOption((option) =>
+      option.setName('user').setDescription('User to reset').setRequired(true)
+    ),
 ].map((cmd) => cmd.toJSON());
 
 async function registerCommands() {
@@ -123,9 +204,9 @@ function isDM(message) {
   return message.channel?.isDMBased?.() || message.guildId === null;
 }
 
-function isAllowedToStore(channelId, dm) {
-  if (dm) return true;
-  return isChannelAllowed(channelId);
+function isMemoryEnabledChannel(message) {
+  if (isDM(message)) return true;
+  return isChannelAllowed(message.channelId);
 }
 
 function containsHateSpeech(text) {
@@ -184,50 +265,12 @@ function isPrivateIp(address) {
     return false;
   }
   if (net.isIPv6(address)) {
-    // Normalize to lowercase for consistent checking
-    const normalized = address.toLowerCase();
-    
-    // Parse the IPv6 address to handle various representations
-    // For loopback, check common representations
-    if (normalized === '::1' || 
-        normalized === '0:0:0:0:0:0:0:1' ||
-        normalized === '0000:0000:0000:0000:0000:0000:0000:0001') {
-      return true;
-    }
-    
-    // For other private ranges, we need to check if they START with the private prefix
-    // Unique Local Addresses (ULA): fc00::/7 and Link-local: fe80::/10
-    
-    // Split the address into segments
-    const segments = normalized.split(':');
-    
-    // If the address starts with '::', the first actual segment is at index 0 or 1
-    // but represents zeros. We need the first NON-ZERO segment that's actually first.
-    // However, if it starts with '::' followed by something, that something is NOT
-    // the first segment of the expanded address.
-    
-    // Check if it starts with fc, fd, or fe80 (not preceded by ::)
-    if (normalized.startsWith('fc') || normalized.startsWith('fd')) {
-      // Extract first segment to validate it's in the right range
-      const firstSegment = segments[0];
-      if (firstSegment) {
-        const firstHex = parseInt(firstSegment, 16);
-        if (!isNaN(firstHex) && firstHex >= 0xfc00 && firstHex <= 0xfdff) {
-          return true;
-        }
-      }
-    }
-    
-    if (normalized.startsWith('fe')) {
-      const firstSegment = segments[0];
-      if (firstSegment) {
-        const firstHex = parseInt(firstSegment, 16);
-        // Link-local: fe80::/10 covers fe80-febf
-        if (!isNaN(firstHex) && firstHex >= 0xfe80 && firstHex <= 0xfebf) {
-          return true;
-        }
-      }
-    }
+    const lower = address.toLowerCase();
+    if (lower === '::1') return true;
+    // Check for unique local addresses (fc00::/7 range)
+    if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
+    // Check for link-local addresses (fe80::/10 range)
+    if (lower.startsWith('fe80')) return true;
   }
   return false;
 }
@@ -303,12 +346,16 @@ async function getReplyContext(message) {
 
 async function handlePrompt({
   userId,
+  guildId,
   channelId,
   prompt,
   reply,
-  isDirect,
   replyContextText,
   imageUrls,
+  allowMemory,
+  alreadyRecorded = false,
+  onTyping,
+  displayName,
 }) {
   const rateKey = [prompt, replyContextText || '', ...(imageUrls || [])].join('|');
   const rate = checkRateLimit(userId, rateKey);
@@ -323,22 +370,33 @@ async function handlePrompt({
   }
 
   const settings = getUserSettings(userId);
-  const allowed = isAllowedToStore(channelId, isDirect);
-  if (settings.memory_enabled && allowed) {
-    let memoryContent = prompt;
+  if (settings.memory_enabled && allowMemory && !alreadyRecorded) {
+    let memoryContent = prompt || '';
     if (!memoryContent && imageUrls?.length) {
-      memoryContent = 'User sent an image.';
+      memoryContent = `User sent ${imageUrls.length} image(s).`;
+    } else if (imageUrls?.length) {
+      memoryContent = `${memoryContent} [shared ${imageUrls.length} image(s)]`;
     }
     if (!memoryContent && replyContextText) {
       memoryContent = 'User replied to a message.';
     }
-    if (imageUrls?.length && memoryContent && !/\bimage\b/i.test(memoryContent)) {
-      memoryContent = `${memoryContent} [shared ${imageUrls.length} image(s)]`;
-    }
-    recordUserMessage({ userId, channelId, content: memoryContent });
+    recordUserMessage({
+      userId,
+      channelId,
+      guildId,
+      content: memoryContent,
+      displayName,
+    });
   }
 
-  const profileSummary = getProfileSummary(userId);
+  const profileSummary = allowMemory ? getProfileSummary(userId) : '';
+  const recentUserMessages = allowMemory ? getRecentMessages(userId, 3) : [];
+  const recentChannelMessages =
+    allowMemory && channelId ? getRecentChannelMessages(channelId, userId, 3) : [];
+  const channelSummary =
+    allowMemory && channelId ? getChannelSummary(channelId) : '';
+  const guildSummary = allowMemory && guildId ? getGuildSummary(guildId) : '';
+  const knownUsers = allowMemory && guildId ? getGuildUserNames(guildId, 12) : [];
   const imageInputs = [];
   if (imageUrls?.length) {
     for (const url of imageUrls.slice(0, MAX_IMAGES)) {
@@ -346,19 +404,21 @@ async function handlePrompt({
       if (dataUrl) imageInputs.push(dataUrl);
     }
   }
-  let effectivePrompt;
-  if (typeof prompt === 'string' && prompt !== '') {
-    effectivePrompt = prompt;
-  } else if (imageInputs.length > 0) {
+  
+  // Determine effective prompt for the LLM
+  let effectivePrompt = prompt;
+  if (!effectivePrompt && imageInputs.length > 0) {
     effectivePrompt = 'User sent an image.';
-  } else if (typeof replyContextText === 'string' && replyContextText.trim() !== '') {
+  } else if (!effectivePrompt && replyContextText) {
     effectivePrompt = 'Following up on the replied message.';
-  } else {
-    effectivePrompt = '';
   }
-  const recentTurns = effectivePrompt
-    ? addTurn(userId, 'user', effectivePrompt)
-    : addTurn(userId, 'user', '...');
+  
+  const recentTurns = allowMemory
+    ? addTurn(userId, 'user', effectivePrompt || '...')
+    : [];
+  if (onTyping) {
+    await onTyping();
+  }
   const response = await getLLMResponse({
     botName: BOT_NAME,
     profileSummary,
@@ -366,173 +426,351 @@ async function handlePrompt({
     userContent: effectivePrompt,
     replyContext: replyContextText,
     imageInputs,
+    recentUserMessages,
+    recentChannelMessages,
+    channelSummary,
+    guildSummary,
+    knownUsers,
   });
-  addTurn(userId, 'assistant', response);
+  if (allowMemory) {
+    addTurn(userId, 'assistant', response);
+  }
   await reply(response);
 }
 
 client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
-  const isDirect = isDM(message);
-  const mentioned = message.mentions.has(client.user);
-  if (!isDirect && !mentioned) return;
+  await safeExecute('messageCreate', async () => {
+    if (message.author.bot) return;
+    const isDirect = isDM(message);
+    const memoryChannel = isMemoryEnabledChannel(message);
+    const settings = getUserSettings(message.author.id);
+    const allowMemoryContext = memoryChannel && settings.memory_enabled;
+    const displayName = message.member?.displayName || message.author.username;
+    
+    // Passively record messages in allowlisted channels only from users who have memory enabled
+    if (allowMemoryContext && message.content && message.content.trim()) {
+      recordUserMessage({
+        userId: message.author.id,
+        channelId: message.channelId,
+        guildId: message.guildId,
+        content: message.content,
+        displayName,
+      });
+    }
 
-  const content = isDirect ? message.content.trim() : stripMention(message.content);
-  const replyContext = await getReplyContext(message);
-  const replyContextText = replyContext
-    ? `Reply context from ${replyContext.author}: ${replyContext.text || '[no text]'}`
-    : '';
-  const imageUrls = [
-    ...getMessageImageUrls(message),
-    ...(replyContext?.images || []),
-  ];
-  if (!content && !imageUrls.length && !replyContextText) return;
+    const mentioned = message.mentions.has(client.user);
+    if (!isDirect && !mentioned) return;
 
-  const replyFn = async (text) => {
-    const sent = await message.reply({ content: text });
-    trackReply({ userMessageId: message.id, botReplyId: sent.id });
-  };
+    const content = isDirect ? message.content.trim() : stripMention(message.content);
+    const replyContext = await getReplyContext(message);
+    const replyContextText = replyContext
+      ? `Reply context from ${replyContext.author}: ${replyContext.text || '[no text]'}`
+      : '';
+    const imageUrls = [
+      ...getMessageImageUrls(message),
+      ...(replyContext?.images || []),
+    ];
+    if (!content && !imageUrls.length && !replyContextText) return;
 
-  await handlePrompt({
-    userId: message.author.id,
-    channelId: message.channelId,
-    prompt: content,
-    reply: replyFn,
-    isDirect,
-    replyContextText,
-    imageUrls,
+    const replyFn = async (text) => {
+      const sent = await message.reply({ content: text });
+      trackReply({ userMessageId: message.id, botReplyId: sent.id });
+    };
+    const typingFn = async () => {
+      await message.channel.sendTyping();
+    };
+
+    await handlePrompt({
+      userId: message.author.id,
+      guildId: message.guildId,
+      channelId: message.channelId,
+      prompt: content,
+      reply: replyFn,
+      replyContextText,
+      imageUrls,
+      allowMemory: allowMemoryContext,
+      alreadyRecorded: allowMemoryContext,
+      onTyping: typingFn,
+      displayName,
+    });
   });
 });
 
 client.on('messageUpdate', async (oldMessage, newMessage) => {
-  if (!newMessage) return;
-  const hydrated = newMessage.partial ? await newMessage.fetch() : newMessage;
-  if (hydrated.author?.bot) return;
-  if (!shouldHandleEdit(hydrated.id)) return;
+  await safeExecute('messageUpdate', async () => {
+    if (!newMessage) return;
+    const hydrated = newMessage.partial ? await newMessage.fetch() : newMessage;
+    if (hydrated.author?.bot) return;
 
-  const isDirect = isDM(hydrated);
-  const mentioned = hydrated.mentions.has(client.user);
-  if (!isDirect && !mentioned) return;
+    const isDirect = isDM(hydrated);
+    const memoryChannel = isMemoryEnabledChannel(hydrated);
+    const settings = getUserSettings(hydrated.author.id);
+    const allowMemoryContext = memoryChannel && settings.memory_enabled;
+    const displayName = hydrated.member?.displayName || hydrated.author.username;
 
-  const content = isDirect
-    ? hydrated.content.trim()
-    : stripMention(hydrated.content);
-  const replyContext = await getReplyContext(hydrated);
-  const replyContextText = replyContext
-    ? `Reply context from ${replyContext.author}: ${replyContext.text || '[no text]'}`
-    : '';
-  const imageUrls = [
-    ...getMessageImageUrls(hydrated),
-    ...(replyContext?.images || []),
-  ];
-  if (!content && !imageUrls.length && !replyContextText) return;
+    // Passively record edited messages in allowlisted channels
+    if (allowMemoryContext && hydrated.content && hydrated.content.trim()) {
+      recordUserMessage({
+        userId: hydrated.author.id,
+        channelId: hydrated.channelId,
+        guildId: hydrated.guildId,
+        content: hydrated.content,
+        displayName,
+      });
+    }
 
-  const replyId = getReplyId(hydrated.id);
-  if (!replyId) return;
+    if (!shouldHandleEdit(hydrated.id)) return;
 
-  const replyFn = async (text, isEdit = false) => {
-    const messageToEdit = await hydrated.channel.messages.fetch(replyId);
-    await messageToEdit.edit({ content: text });
-  };
+    const mentioned = hydrated.mentions.has(client.user);
+    if (!isDirect && !mentioned) return;
 
-  await handlePrompt({
-    userId: hydrated.author.id,
-    channelId: hydrated.channelId,
-    prompt: content,
-    reply: replyFn,
-    isDirect,
-    replyContextText,
-    imageUrls,
+    const content = isDirect
+      ? hydrated.content.trim()
+      : stripMention(hydrated.content);
+    const replyContext = await getReplyContext(hydrated);
+    const replyContextText = replyContext
+      ? `Reply context from ${replyContext.author}: ${replyContext.text || '[no text]'}`
+      : '';
+    const imageUrls = [
+      ...getMessageImageUrls(hydrated),
+      ...(replyContext?.images || []),
+    ];
+    if (!content && !imageUrls.length && !replyContextText) return;
+
+    const replyId = getReplyId(hydrated.id);
+    if (!replyId) return;
+
+    const replyFn = async (text, isEdit = false) => {
+      const messageToEdit = await hydrated.channel.messages.fetch(replyId);
+      await messageToEdit.edit({ content: text });
+    };
+    const typingFn = async () => {
+      await hydrated.channel.sendTyping();
+    };
+
+    await handlePrompt({
+      userId: hydrated.author.id,
+      guildId: hydrated.guildId,
+      channelId: hydrated.channelId,
+      prompt: content,
+      reply: replyFn,
+      replyContextText,
+      imageUrls,
+      allowMemory: allowMemoryContext,
+      alreadyRecorded: allowMemoryContext,
+      onTyping: typingFn,
+      displayName,
+    });
   });
 });
 
 client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
+  await safeExecute('interactionCreate', async () => {
+    if (!interaction.isChatInputCommand()) return;
 
-  const { commandName } = interaction;
-  const isSuperAdmin = interaction.user.id === SUPER_ADMIN_USER_ID;
+    const { commandName } = interaction;
+    const isSuperAdmin = interaction.user.id === SUPER_ADMIN_USER_ID;
+    const hasAdminPerms =
+      isSuperAdmin || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
 
-  if (commandName === 'ask') {
-    const question = interaction.options.getString('question', true);
-    const replyFn = async (text) => {
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({ content: text });
-      } else {
-        await interaction.reply({ content: text });
+    if (commandName === 'ask') {
+      const question = interaction.options.getString('question', true);
+      const settings = getUserSettings(interaction.user.id);
+      const memoryChannel = interaction.channel?.isDMBased?.()
+        ? true
+        : isChannelAllowed(interaction.channelId);
+      const allowMemoryContext = memoryChannel && settings.memory_enabled;
+      const displayName =
+        interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
+      const replyFn = async (text) => {
+        try {
+          if (interaction.deferred) {
+            await interaction.editReply({ content: text });
+          } else if (interaction.replied) {
+            await interaction.followUp({ content: text });
+          } else {
+            await interaction.reply({ content: text });
+          }
+        } catch (err) {
+          if (err.code === DISCORD_INTERACTION_EXPIRED_CODE) {
+            console.error('Failed to send reply: Interaction expired before response could be sent');
+          } else {
+            throw err;
+          }
+        }
+      };
+      const typingFn = async () => {
+        try {
+          if (!interaction.deferred && !interaction.replied) {
+            await interaction.deferReply();
+          }
+        } catch (err) {
+          if (err.code === DISCORD_INTERACTION_EXPIRED_CODE) {
+            console.error('Failed to defer reply: Interaction expired before deferReply could be called');
+          } else {
+            throw err;
+          }
+        }
+      };
+
+      // Passively record /ask messages in allowlisted channels
+      if (allowMemoryContext && question && question.trim()) {
+        recordUserMessage({
+          userId: interaction.user.id,
+          channelId: interaction.channelId,
+          guildId: interaction.guildId,
+          content: question,
+          displayName,
+        });
       }
-    };
 
-    await handlePrompt({
-      userId: interaction.user.id,
-      channelId: interaction.channelId,
-      prompt: question,
-      reply: replyFn,
-      isDirect: interaction.channel?.isDMBased?.() ?? false,
-      replyContextText: '',
-      imageUrls: [],
-    });
-  }
+      await handlePrompt({
+        userId: interaction.user.id,
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        prompt: question,
+        reply: replyFn,
+        replyContextText: '',
+        imageUrls: [],
+        allowMemory: allowMemoryContext,
+        alreadyRecorded: allowMemoryContext,
+        onTyping: typingFn,
+        displayName,
+      });
+    }
 
-  if (commandName === 'memory') {
-    const sub = interaction.options.getSubcommand();
-    if (sub === 'on') {
-      setUserMemory(interaction.user.id, true);
-      await interaction.reply({ content: 'Memory is on.' });
+    if (commandName === 'memory') {
+      const sub = interaction.options.getSubcommand();
+      if (sub === 'on') {
+        setUserMemory(interaction.user.id, true);
+        await interaction.reply({ content: 'Memory is on.' });
+      }
+      if (sub === 'off') {
+        setUserMemory(interaction.user.id, false);
+        await interaction.reply({ content: 'Memory is off.' });
+      }
+      if (sub === 'forget') {
+        forgetUser(interaction.user.id);
+        await interaction.reply({ content: 'Memory wiped.' });
+      }
+      if (sub === 'view') {
+        const summary = viewMemory(interaction.user.id);
+        await interaction.reply({ content: summary });
+      }
     }
-    if (sub === 'off') {
-      setUserMemory(interaction.user.id, false);
-      await interaction.reply({ content: 'Memory is off.' });
-    }
-    if (sub === 'forget') {
-      forgetUser(interaction.user.id);
-      await interaction.reply({ content: 'Memory wiped.' });
-    }
-    if (sub === 'view') {
-      const summary = viewMemory(interaction.user.id);
-      await interaction.reply({ content: summary });
-    }
-  }
 
-  if (commandName === 'memory-allow') {
-    if (!interaction.inGuild() && !isSuperAdmin) {
-      await interaction.reply({ content: 'Guilds only.', ephemeral: true });
-      return;
+    if (commandName === 'memory-allow') {
+      if (!interaction.inGuild() && !isSuperAdmin) {
+        await interaction.reply({ content: 'Guilds only.', ephemeral: true });
+        return;
+      }
+      if (!hasAdminPerms) {
+        await interaction.reply({ content: 'Admin only.', ephemeral: true });
+        return;
+      }
+      const channel = interaction.options.getChannel('channel', true);
+      allowChannel(channel.id);
+      await interaction.reply({ content: `Allowed memory in <#${channel.id}>.` });
     }
-    const channel = interaction.options.getChannel('channel', true);
-    allowChannel(channel.id);
-    await interaction.reply({ content: `Allowed memory in <#${channel.id}>.` });
-  }
 
-  if (commandName === 'memory-deny') {
-    if (!interaction.inGuild() && !isSuperAdmin) {
-      await interaction.reply({ content: 'Guilds only.', ephemeral: true });
-      return;
+    if (commandName === 'memory-deny') {
+      if (!interaction.inGuild() && !isSuperAdmin) {
+        await interaction.reply({ content: 'Guilds only.', ephemeral: true });
+        return;
+      }
+      if (!hasAdminPerms) {
+        await interaction.reply({ content: 'Admin only.', ephemeral: true });
+        return;
+      }
+      const channel = interaction.options.getChannel('channel', true);
+      denyChannel(channel.id);
+      await interaction.reply({ content: `Denied memory in <#${channel.id}>.` });
     }
-    const channel = interaction.options.getChannel('channel', true);
-    denyChannel(channel.id);
-    await interaction.reply({ content: `Denied memory in <#${channel.id}>.` });
-  }
 
-  if (commandName === 'memory-list') {
-    if (!interaction.inGuild() && !isSuperAdmin) {
-      await interaction.reply({ content: 'Guilds only.', ephemeral: true });
-      return;
+    if (commandName === 'memory-list') {
+      if (!interaction.inGuild() && !isSuperAdmin) {
+        await interaction.reply({ content: 'Guilds only.', ephemeral: true });
+        return;
+      }
+      if (!hasAdminPerms) {
+        await interaction.reply({ content: 'Admin only.', ephemeral: true });
+        return;
+      }
+      const allRows = listChannels();
+      // Filter to only show channels from the current guild
+      const guild = interaction.guild;
+      const guildChannelIds = new Set(guild.channels.cache.keys());
+      const rows = allRows.filter((row) => guildChannelIds.has(row.channel_id));
+      
+      if (!rows.length) {
+        await interaction.reply({ content: 'No channels configured in this guild.' });
+        return;
+      }
+      const formatted = rows
+        .map((row) => `• <#${row.channel_id}>: ${row.enabled ? 'allowed' : 'denied'}`)
+        .join('\n');
+      await interaction.reply({ content: formatted });
     }
-    const rows = listChannels();
-    if (!rows.length) {
-      await interaction.reply({ content: 'No channels configured.' });
-      return;
+
+    if (commandName === 'memory-reset-guild') {
+      if (!interaction.inGuild() && !isSuperAdmin) {
+        await interaction.reply({ content: 'Guilds only.', ephemeral: true });
+        return;
+      }
+      if (!hasAdminPerms) {
+        await interaction.reply({ content: 'Admin only.', ephemeral: true });
+        return;
+      }
+      resetGuildMemory(interaction.guildId);
+      await interaction.reply({ content: 'Guild memory reset.' });
     }
-    const formatted = rows
-      .map((row) => `• <#${row.channel_id}>: ${row.enabled ? 'allowed' : 'denied'}`)
-      .join('\n');
-    await interaction.reply({ content: formatted });
-  }
+
+    if (commandName === 'memory-reset-channel') {
+      if (!interaction.inGuild() && !isSuperAdmin) {
+        await interaction.reply({ content: 'Guilds only.', ephemeral: true });
+        return;
+      }
+      if (!hasAdminPerms) {
+        await interaction.reply({ content: 'Admin only.', ephemeral: true });
+        return;
+      }
+      const channel = interaction.options.getChannel('channel', true);
+      resetChannelMemory(channel.id);
+      await interaction.reply({ content: `Memory reset for <#${channel.id}>.` });
+    }
+
+    if (commandName === 'memory-reset-user') {
+      if (!interaction.inGuild() && !isSuperAdmin) {
+        await interaction.reply({ content: 'Guilds only.', ephemeral: true });
+        return;
+      }
+      if (!hasAdminPerms) {
+        await interaction.reply({ content: 'Admin only.', ephemeral: true });
+        return;
+      }
+      const user = interaction.options.getUser('user', true);
+      forgetUser(user.id);
+      await interaction.reply({ content: `Memory reset for ${user.username}. This action has been logged.` });
+      
+      // Attempt to notify the user via DM
+      try {
+        await user.send(
+          `Your conversation memory and personality profile have been reset by an administrator in ${interaction.guild.name}.`
+        );
+      } catch (dmErr) {
+        // User may have DMs disabled or blocked the bot, which is fine
+        console.log(`Could not send DM to user ${user.username} about memory reset:`, dmErr.message);
+      }
+    }
+  });
 });
 
 client.once('ready', async () => {
-  console.log(`Logged in as ${client.user.tag}`);
-  await registerCommands();
+  await safeExecute('ready', async () => {
+    console.log(`Logged in as ${client.user.tag}`);
+    await registerCommands();
+  });
 });
 
+setupProcessGuards();
 client.login(DISCORD_TOKEN);
