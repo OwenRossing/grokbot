@@ -45,6 +45,8 @@ const {
 } = process.env;
 
 const DISCORD_INTERACTION_EXPIRED_CODE = 10062;
+const DISCORD_UNKNOWN_MESSAGE_CODE = 10008;
+const DISCORD_BULK_DELETE_LIMIT = 100;
 
 function setupProcessGuards() {
   process.on('unhandledRejection', (reason) => {
@@ -880,7 +882,7 @@ client.on('interactionCreate', async (interaction) => {
         const canUseBulkDelete = sinceTimestamp >= fourteenDaysAgo && messageIds.length >= 2;
         let bulkDeleteSucceeded = false;
 
-        if (canUseBulkDelete && messageIds.length <= 100) {
+        if (canUseBulkDelete && messageIds.length <= DISCORD_BULK_DELETE_LIMIT) {
           // Use bulk delete API (max 100 messages at a time)
           try {
             await channel.bulkDelete(messageIds, true);
@@ -909,7 +911,7 @@ client.on('interactionCreate', async (interaction) => {
               failedCount++;
               console.log(`Failed to delete message ${messageId}:`, err.message);
               // Still clean up from database if the message doesn't exist anymore
-              if (err.code === 10008) { // Unknown Message error code
+              if (err.code === DISCORD_UNKNOWN_MESSAGE_CODE) {
                 deleteBotMessageRecord(messageId);
               }
             }

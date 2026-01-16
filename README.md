@@ -59,9 +59,9 @@ Replying to another message with an image also works:
 
 ### Slash command
 ```
-/ask question:whats good
-/ask question:whats good ghost:false   (visible to everyone)
-/ask question:whats good ghost:true    (visible only to you - default)
+/ask question: whats good
+/ask question: whats good ghost:false   (visible to everyone)
+/ask question: whats good ghost:true    (visible only to you - default)
 ```
 
 The `ghost` parameter controls message visibility:
