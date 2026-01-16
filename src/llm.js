@@ -5,7 +5,11 @@ const DEFAULT_VISION_MODEL = process.env.GROK_VISION_MODEL || '';
 
 function normalizeBaseUrl(baseUrl) {
   if (!baseUrl) return '';
-  return baseUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
+  let url = baseUrl.replace(/\/+$/, '');
+  while (url.endsWith('/v1')) {
+    url = url.slice(0, -3);
+  }
+  return url;
 }
 
 const systemPrompt = `You are a Discord assistant named {BOT_NAME}.
@@ -30,8 +34,8 @@ function buildMessages({
   userContent,
   replyContext,
   imageInputs,
-  relevantMessages,
-  channelMessages,
+  recentUserMessages,
+  recentChannelMessages,
   channelSummary,
   guildSummary,
   knownUsers,
@@ -57,8 +61,8 @@ function buildMessages({
     });
   }
 
-  if (relevantMessages?.length) {
-    const formatted = relevantMessages.map((msg) => `- ${msg}`).join('\n');
+  if (recentUserMessages?.length) {
+    const formatted = recentUserMessages.map((msg) => `- ${msg}`).join('\n');
     messages.push({
       role: 'system',
       content: `Recent user messages:\n${formatted}`,
@@ -86,8 +90,8 @@ function buildMessages({
     });
   }
 
-  if (channelMessages?.length) {
-    const formatted = channelMessages.map((msg) => `- ${msg}`).join('\n');
+  if (recentChannelMessages?.length) {
+    const formatted = recentChannelMessages.map((msg) => `- ${msg}`).join('\n');
     messages.push({
       role: 'system',
       content: `Recent channel messages:\n${formatted}`,
@@ -122,8 +126,8 @@ async function callOnce({
   userContent,
   replyContext,
   imageInputs,
-  relevantMessages,
-  channelMessages,
+  recentUserMessages,
+  recentChannelMessages,
   channelSummary,
   guildSummary,
   knownUsers,
@@ -147,8 +151,8 @@ async function callOnce({
         userContent,
         replyContext,
         imageInputs,
-        relevantMessages,
-        channelMessages,
+        recentUserMessages,
+        recentChannelMessages,
         channelSummary,
         guildSummary,
         knownUsers,
@@ -180,8 +184,8 @@ export async function getLLMResponse({
   userContent,
   replyContext,
   imageInputs,
-  relevantMessages,
-  channelMessages,
+  recentUserMessages,
+  recentChannelMessages,
   channelSummary,
   guildSummary,
   knownUsers,
@@ -194,8 +198,8 @@ export async function getLLMResponse({
       userContent,
       replyContext,
       imageInputs,
-      relevantMessages,
-      channelMessages,
+      recentUserMessages,
+      recentChannelMessages,
       channelSummary,
       guildSummary,
       knownUsers,
@@ -213,8 +217,8 @@ export async function getLLMResponse({
         userContent,
         replyContext,
         imageInputs,
-        relevantMessages,
-        channelMessages,
+        recentUserMessages,
+        recentChannelMessages,
         channelSummary,
         guildSummary,
         knownUsers,
