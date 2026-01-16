@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
-const DEFAULT_MODEL = process.env.GROK_MODEL || 'grok-4';
+const DEFAULT_MODEL = process.env.GROK_MODEL || 'grok-4-1-fast-reasoning';
 const DEFAULT_VISION_MODEL = process.env.GROK_VISION_MODEL || '';
 
 function normalizeBaseUrl(baseUrl) {
