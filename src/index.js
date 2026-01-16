@@ -521,17 +521,33 @@ client.on('interactionCreate', async (interaction) => {
       const displayName =
         interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
       const replyFn = async (text) => {
-        if (interaction.deferred) {
-          await interaction.editReply({ content: text });
-        } else if (interaction.replied) {
-          await interaction.followUp({ content: text });
-        } else {
-          await interaction.reply({ content: text });
+        try {
+          if (interaction.deferred) {
+            await interaction.editReply({ content: text });
+          } else if (interaction.replied) {
+            await interaction.followUp({ content: text });
+          } else {
+            await interaction.reply({ content: text });
+          }
+        } catch (err) {
+          if (err.code === 10062) {
+            console.error('Interaction expired before response could be sent');
+          } else {
+            throw err;
+          }
         }
       };
       const typingFn = async () => {
-        if (!interaction.deferred && !interaction.replied) {
-          await interaction.deferReply();
+        try {
+          if (!interaction.deferred && !interaction.replied) {
+            await interaction.deferReply();
+          }
+        } catch (err) {
+          if (err.code === 10062) {
+            console.error('Interaction expired before deferReply could be called');
+          } else {
+            throw err;
+          }
         }
       };
 
