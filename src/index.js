@@ -201,6 +201,7 @@ const slashCommands = [
       option
         .setName('question')
         .setDescription('What do you want to ask?')
+        .setDMPermission(true)
         .setRequired(true)
     )
     .addBooleanOption((option) =>
@@ -879,7 +880,8 @@ client.on('interactionCreate', async (interaction) => {
       isSuperAdmin || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
 
     if (commandName === 'ask') {
-      const question = interaction.options.getString('question', true);
+      const isDM = interaction.channel?.isDMBased?.();
+      const ghost = !isDM && (interaction.options.getBoolean('ghost') ?? true);
       const ghost = interaction.options.getBoolean('ghost') ?? true; // Default to true (ephemeral)
       const settings = getUserSettings(interaction.user.id);
       const memoryChannel = interaction.channel?.isDMBased?.()
