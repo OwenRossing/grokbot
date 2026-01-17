@@ -330,18 +330,26 @@ async function registerCommands() {
 }
 
 async function searchTenorGif(query) {
-  if (!TENOR_API_KEY) return null;
-  const url = new URL('https://tenor.googleapis.com/v2/search');
-  url.searchParams.set('q', query);
-  url.searchParams.set('key', TENOR_API_KEY);
-  url.searchParams.set('limit', '1');
-  url.searchParams.set('media_filter', 'gif');
-  const res = await fetch(url, { method: 'GET' });
-  if (!res.ok) return null;
-  const data = await res.json();
-  const item = data?.results?.[0];
-  const direct = item?.media_formats?.gif?.url || item?.media_formats?.tinygif?.url || null;
-  return direct;
+  if (!TENOR_API_KEY) {
+    console.warn('TENOR_API_KEY not set — Tenor GIFs disabled');
+    return null;
+  }
+  try {
+    const url = new URL('https://tenor.googleapis.com/v2/search');
+    url.searchParams.set('q', query);
+    url.searchParams.set('key', TENOR_API_KEY);
+    url.searchParams.set('limit', '1');
+    url.searchParams.set('media_filter', 'gif');
+    const res = await fetch(url, { method: 'GET' });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const item = data?.results?.[0];
+    const direct = item?.media_formats?.gif?.url || item?.media_formats?.tinygif?.url || null;
+    return direct;
+  } catch (err) {
+    console.error('Tenor API search failed:', err);
+    return null;
+  }
 }
 
 function stripMention(content) {
@@ -539,24 +547,32 @@ async function resolveTenorDirect(u) {
   } catch {
     return null;
   }
-  if (!TENOR_API_KEY) return null;
-  let q = '';
+  if (!TENOR_API_KEY) {
+    console.warn('TENOR_API_KEY not set — Tenor URL resolution disabled');
+    return null;
+  }
   try {
-    const pathSegs = new URL(u).pathname.split('/').filter(Boolean);
-    q = decodeURIComponent(pathSegs[pathSegs.length - 1] || '');
-  } catch {}
-  if (!q) return null;
-  const searchUrl = new URL('https://tenor.googleapis.com/v2/search');
-  searchUrl.searchParams.set('q', q.replace(/[-_]/g, ' '));
-  searchUrl.searchParams.set('key', TENOR_API_KEY);
-  searchUrl.searchParams.set('limit', '1');
-  searchUrl.searchParams.set('media_filter', 'gif');
-  const resp = await fetch(searchUrl);
-  if (!resp.ok) return null;
-  const data = await resp.json();
-  const item = data?.results?.[0];
-  const direct = item?.media_formats?.gif?.url || item?.media_formats?.tinygif?.url || null;
-  return direct || null;
+    let q = '';
+    try {
+      const pathSegs = new URL(u).pathname.split('/').filter(Boolean);
+      q = decodeURIComponent(pathSegs[pathSegs.length - 1] || '');
+    } catch {}
+    if (!q) return null;
+    const searchUrl = new URL('https://tenor.googleapis.com/v2/search');
+    searchUrl.searchParams.set('q', q.replace(/[-_]/g, ' '));
+    searchUrl.searchParams.set('key', TENOR_API_KEY);
+    searchUrl.searchParams.set('limit', '1');
+    searchUrl.searchParams.set('media_filter', 'gif');
+    const resp = await fetch(searchUrl);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const item = data?.results?.[0];
+    const direct = item?.media_formats?.gif?.url || item?.media_formats?.tinygif?.url || null;
+    return direct || null;
+  } catch (err) {
+    console.error('Tenor direct resolution failed:', err);
+    return null;
+  }
 }
 
 async function resolveDirectMediaUrl(u) {
