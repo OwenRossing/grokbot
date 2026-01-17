@@ -22,7 +22,7 @@ import Database from 'better-sqlite3';
  *    - Admins use /memory-allow and /memory-deny to configure
  */
 
-const db = new Database('data.db');
+export const db = new Database('data.db');
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 
 db.exec(`

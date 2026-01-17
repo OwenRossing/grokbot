@@ -12,7 +12,11 @@ function normalizeBaseUrl(baseUrl) {
   return url;
 }
 
-const systemPrompt = `system prompt here`;
+const systemPrompt = process.env.SYSTEM_PROMPT ||
+  'You are {BOT_NAME}, an advanced AI assistant integrated into a Discord server. ' +
+  'Provide helpful, concise, and friendly responses to user queries. ' +
+  'When appropriate, use markdown formatting for code snippets and lists. ' +
+  'If you do not know the answer, respond with "idk tbh".';
 
 const fallbackErrorLine =
   'cant answer rn bro too busy gooning (grok api error)';

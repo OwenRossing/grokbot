@@ -30,6 +30,15 @@ import {
   getBotMessagesInChannel,
   deleteBotMessageRecord,
 } from './memory.js';
+import {
+  createPoll,
+  getPollByMessageId,
+  listOpenPolls,
+  recordVote,
+  removeVote,
+  tallyVotes,
+  closePoll,
+} from './polls.js';
 import { getLLMResponse } from './llm.js';
 import { checkRateLimit } from './rateLimit.js';
 import { getReplyId, shouldHandleEdit, trackReply } from './editSync.js';
@@ -42,6 +51,7 @@ const {
   GROK_API_KEY,
   BOT_NAME = 'GrokBuddy',
   SUPER_ADMIN_USER_ID,
+  TENOR_API_KEY,
 } = process.env;
 
 const DISCORD_INTERACTION_EXPIRED_CODE = 10062;
@@ -113,8 +123,9 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildMessageReactions,
   ],
-  partials: [Partials.Channel, Partials.Message],
+  partials: [Partials.Channel, Partials.Message, Partials.Reaction],
 });
 
 const inMemoryTurns = new Map();
@@ -122,6 +133,65 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_IMAGES = 4;
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif)(\?.*)?$/i;
 const IMAGE_MIME = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+const VIDEO_EXT = /\.(mp4|mov|webm|mkv|m4v)(\?.*)?$/i;
+const VIDEO_MIME_PREFIXES = ['video/'];
+const NUMBER_EMOJIS = ['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟'];
+const pollTimers = new Map(); // messageId -> timeoutId
+
+function parseDuration(input) {
+  if (!input) return 24 * 60 * 60 * 1000; // default 24h
+  const m = String(input).trim().match(/^(\d+)(m|h|d)$/i);
+  if (!m) return 24 * 60 * 60 * 1000;
+  const n = parseInt(m[1], 10);
+  const unit = m[2].toLowerCase();
+  if (unit === 'm') return n * 60 * 1000;
+  if (unit === 'h') return n * 60 * 60 * 1000;
+  if (unit === 'd') return n * 24 * 60 * 60 * 1000;
+  return 24 * 60 * 60 * 1000;
+}
+
+function parseQuotedPoll(text) {
+  // Example: poll "Question" "A" "B" --duration 2h
+  const match = text.match(/poll\s+((?:\"[^\"]+\"\s*)+)(?:--duration\s+(\S+))?/i);
+  if (!match) return null;
+  const quoted = Array.from(match[1].matchAll(/\"([^\"]+)\"/g)).map(m => m[1]);
+  if (quoted.length < 3) return null; // question + at least 2 options
+  const question = quoted[0];
+  const options = quoted.slice(1).slice(0, 10);
+  const duration = parseDuration(match[2] || '24h');
+  return { question, options, duration, multi: false };
+}
+
+async function schedulePollClosure(messageId, closeAt) {
+  const delayMs = Math.max(0, closeAt - Date.now());
+  if (pollTimers.has(messageId)) {
+    clearTimeout(pollTimers.get(messageId));
+  }
+  const t = setTimeout(async () => {
+    try {
+      const poll = getPollByMessageId(messageId);
+      if (!poll || poll.closed) return;
+      const channel = await client.channels.fetch(poll.channel_id);
+      await postPollResults(poll, channel);
+      closePoll(poll.id);
+    } catch (e) {
+      console.error('Failed to auto-close poll', e);
+    } finally {
+      pollTimers.delete(messageId);
+    }
+  }, delayMs);
+  pollTimers.set(messageId, t);
+}
+
+async function postPollResults(poll, channel) {
+  const options = JSON.parse(poll.options_json);
+  const counts = tallyVotes(poll.id, options.length);
+  const total = counts.reduce((a, b) => a + b, 0);
+  const lines = options.map((opt, i) => `${NUMBER_EMOJIS[i]} ${opt} — ${counts[i]} vote${counts[i] === 1 ? '' : 's'}`);
+  const header = `📊 Poll closed: ${poll.question}`;
+  const footer = `Total votes: ${total}`;
+  await channel.send({ content: `${header}\n\n${lines.join('\n')}\n\n${footer}` });
+}
 
 const slashCommands = [
   new SlashCommandBuilder()
@@ -138,6 +208,42 @@ const slashCommands = [
         .setName('ghost')
         .setDescription('Make the response visible only to you (ghost message)')
         .setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName('poll')
+    .setDescription('Create a reaction-based poll')
+    .addStringOption((option) =>
+      option
+        .setName('question')
+        .setDescription('Poll question')
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('options')
+        .setDescription('Options separated by | (e.g., A|B|C)')
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('duration')
+        .setDescription('How long the poll runs (e.g., 30m, 2h, 1d). Default 24h')
+        .setRequired(false)
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName('multi')
+        .setDescription('Allow multiple choices per user')
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName('gif')
+    .setDescription('Search Tenor and post a GIF')
+    .addStringOption((option) =>
+      option
+        .setName('query')
+        .setDescription('What GIF to search for?')
+        .setRequired(true)
     ),
   new SlashCommandBuilder()
     .setName('memory')
@@ -223,6 +329,21 @@ async function registerCommands() {
   console.log('Slash commands registered.');
 }
 
+async function searchTenorGif(query) {
+  if (!TENOR_API_KEY) return null;
+  const url = new URL('https://tenor.googleapis.com/v2/search');
+  url.searchParams.set('q', query);
+  url.searchParams.set('key', TENOR_API_KEY);
+  url.searchParams.set('limit', '1');
+  url.searchParams.set('media_filter', 'gif');
+  const res = await fetch(url, { method: 'GET' });
+  if (!res.ok) return null;
+  const data = await res.json();
+  const item = data?.results?.[0];
+  const direct = item?.media_formats?.gif?.url || item?.media_formats?.tinygif?.url || null;
+  return direct;
+}
+
 function stripMention(content) {
   if (!client.user) return content;
   const regex = new RegExp(`<@!?${client.user.id}>`, 'g');
@@ -261,6 +382,14 @@ function isImageAttachment(attachment) {
   return IMAGE_EXT.test(attachment.url) || IMAGE_EXT.test(attachment.name || '');
 }
 
+function isVideoAttachment(attachment) {
+  if (!attachment?.url) return false;
+  if (attachment.contentType && VIDEO_MIME_PREFIXES.some((p) => attachment.contentType.startsWith(p))) {
+    return true;
+  }
+  return VIDEO_EXT.test(attachment.url) || VIDEO_EXT.test(attachment.name || '');
+}
+
 function extractImageUrlsFromText(text) {
   if (!text) return [];
   const matches = text.match(/https:\/\/[^\s<>()]+/gi) || [];
@@ -287,6 +416,24 @@ function getMessageImageUrls(message) {
   }
   urls.push(...extractImageUrlsFromText(message.content || ''));
   urls.push(...extractImageUrlsFromEmbeds(message.embeds));
+  return Array.from(new Set(urls));
+}
+
+function getMessageVideoUrls(message) {
+  const urls = [];
+  for (const attachment of message.attachments?.values?.() || []) {
+    if (isVideoAttachment(attachment)) {
+      urls.push(attachment.url);
+    }
+  }
+  // Basic extraction from text (file links with video extensions)
+  if (message.content) {
+    const matches = message.content.match(/https:\/\/[^\s<>()]+/gi) || [];
+    for (const raw of matches) {
+      const url = raw.replace(/[)>.,!?:;]+$/, '');
+      if (VIDEO_EXT.test(url)) urls.push(url);
+    }
+  }
   return Array.from(new Set(urls));
 }
 
@@ -330,14 +477,16 @@ async function isSafeHttpsUrl(url) {
 }
 
 async function fetchImageAsDataUrl(url) {
-  const safe = await isSafeHttpsUrl(url);
+  const resolved = await resolveDirectMediaUrl(url);
+  const finalUrl = resolved || url;
+  const safe = await isSafeHttpsUrl(finalUrl);
   if (!safe) return null;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
   try {
-    const response = await fetch(url, { signal: controller.signal, redirect: 'follow' });
+    const response = await fetch(finalUrl, { signal: controller.signal, redirect: 'follow' });
     if (!response.ok) return null;
-    if (response.url && response.url !== url) {
+    if (response.url && response.url !== finalUrl) {
       const redirectSafe = await isSafeHttpsUrl(response.url);
       if (!redirectSafe) return null;
     }
@@ -363,6 +512,62 @@ async function fetchImageAsDataUrl(url) {
   }
 }
 
+function parseGiphyIdFromUrl(u) {
+  try {
+    const url = new URL(u);
+    if (!/giphy\.com$/i.test(url.hostname) && !/media\.giphy\.com$/i.test(url.hostname)) return null;
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts[0] === 'media' && parts[1]) return parts[1];
+    if (parts[0] === 'gifs' && parts[1]) {
+      const m = parts[1].match(/-([A-Za-z0-9]+)$/);
+      if (m) return m[1];
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function buildGiphyDirectUrl(id) {
+  return `https://media.giphy.com/media/${id}/giphy.gif`;
+}
+
+async function resolveTenorDirect(u) {
+  try {
+    const url = new URL(u);
+    if (!/tenor\.com$/i.test(url.hostname)) return null;
+  } catch {
+    return null;
+  }
+  if (!TENOR_API_KEY) return null;
+  let q = '';
+  try {
+    const pathSegs = new URL(u).pathname.split('/').filter(Boolean);
+    q = decodeURIComponent(pathSegs[pathSegs.length - 1] || '');
+  } catch {}
+  if (!q) return null;
+  const searchUrl = new URL('https://tenor.googleapis.com/v2/search');
+  searchUrl.searchParams.set('q', q.replace(/[-_]/g, ' '));
+  searchUrl.searchParams.set('key', TENOR_API_KEY);
+  searchUrl.searchParams.set('limit', '1');
+  searchUrl.searchParams.set('media_filter', 'gif');
+  const resp = await fetch(searchUrl);
+  if (!resp.ok) return null;
+  const data = await resp.json();
+  const item = data?.results?.[0];
+  const direct = item?.media_formats?.gif?.url || item?.media_formats?.tinygif?.url || null;
+  return direct || null;
+}
+
+async function resolveDirectMediaUrl(u) {
+  if (IMAGE_EXT.test(u)) return u;
+  const giphyId = parseGiphyIdFromUrl(u);
+  if (giphyId) return buildGiphyDirectUrl(giphyId);
+  const tenor = await resolveTenorDirect(u);
+  if (tenor) return tenor;
+  return null;
+}
+
 async function getReplyContext(message) {
   const replyId = message.reference?.messageId;
   if (!replyId) return null;
@@ -370,10 +575,12 @@ async function getReplyContext(message) {
     const referenced = await message.channel.messages.fetch(replyId);
     const text = referenced.content?.trim() || '';
     const images = getMessageImageUrls(referenced);
+    const videos = getMessageVideoUrls(referenced);
     return {
       author: referenced.author?.username || 'Unknown',
       text,
       images,
+      videos,
     };
   } catch {
     return null;
@@ -388,6 +595,7 @@ async function handlePrompt({
   reply,
   replyContextText,
   imageUrls,
+  videoUrls,
   allowMemory,
   alreadyRecorded = false,
   onTyping,
@@ -445,6 +653,8 @@ async function handlePrompt({
   let effectivePrompt = prompt;
   if (!effectivePrompt && imageInputs.length > 0) {
     effectivePrompt = 'User sent an image.';
+  } else if (!effectivePrompt && (videoUrls?.length || (replyContextText && replyContextText.includes('video')))) {
+    effectivePrompt = 'User referenced a video.';
   } else if (!effectivePrompt && replyContextText) {
     effectivePrompt = 'Following up on the replied message.';
   }
@@ -498,13 +708,53 @@ client.on('messageCreate', async (message) => {
     if (!isDirect && !mentioned) return;
 
     const content = isDirect ? message.content.trim() : stripMention(message.content);
+    // Inline poll creation when mentioned with quoted syntax
+    if (mentioned) {
+      const parsed = parseQuotedPoll(content);
+      if (parsed) {
+        const { question, options, duration } = parsed;
+        if (options.length < 2) {
+          await message.reply('Need at least two options.');
+          return;
+        }
+        if (options.length > NUMBER_EMOJIS.length) {
+          await message.reply(`Max ${NUMBER_EMOJIS.length} options.`);
+          return;
+        }
+        const closeAt = Date.now() + duration;
+        const pollMsg = await message.channel.send({
+          content: `📊 ${question}\n\n${options.map((o, i) => `${NUMBER_EMOJIS[i]} ${o}`).join('\n')}\n\n⏳ closes <t:${Math.floor(closeAt/1000)}:R>`
+        });
+        trackBotMessage(pollMsg.id, pollMsg.channelId, pollMsg.guildId);
+        for (let i = 0; i < options.length; i++) {
+          await pollMsg.react(NUMBER_EMOJIS[i]);
+        }
+        createPoll({
+          guildId: pollMsg.guildId || null,
+          channelId: pollMsg.channelId,
+          messageId: pollMsg.id,
+          creatorId: message.author.id,
+          question,
+          options,
+          multiVote: false,
+          anonymous: false,
+          closesAt: closeAt,
+        });
+        schedulePollClosure(pollMsg.id, closeAt);
+        return;
+      }
+    }
     const replyContext = await getReplyContext(message);
     const replyContextText = replyContext
-      ? `Reply context from ${replyContext.author}: ${replyContext.text || '[no text]'}`
+      ? `Reply context from ${replyContext.author}: ${replyContext.text || '[no text]'}${(replyContext.videos?.length ? ' [video referenced]' : '')}`
       : '';
     const imageUrls = [
       ...getMessageImageUrls(message),
       ...(replyContext?.images || []),
+    ];
+    const videoUrls = [
+      ...getMessageVideoUrls(message),
+      ...(replyContext?.videos || []),
     ];
     if (!content && !imageUrls.length && !replyContextText) return;
 
@@ -525,6 +775,7 @@ client.on('messageCreate', async (message) => {
       reply: replyFn,
       replyContextText,
       imageUrls,
+      videoUrls,
       allowMemory: allowMemoryContext,
       alreadyRecorded: allowMemoryContext,
       onTyping: typingFn,
@@ -593,6 +844,7 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
       reply: replyFn,
       replyContextText,
       imageUrls,
+      videoUrls: [],
       allowMemory: allowMemoryContext,
       alreadyRecorded: allowMemoryContext,
       onTyping: typingFn,
@@ -680,6 +932,57 @@ client.on('interactionCreate', async (interaction) => {
         onTyping: typingFn,
         displayName,
       });
+    }
+
+    if (commandName === 'poll') {
+      const question = interaction.options.getString('question', true);
+      const optionsRaw = interaction.options.getString('options', true);
+      const durationStr = interaction.options.getString('duration') || '24h';
+      const multi = interaction.options.getBoolean('multi') || false;
+
+      const options = optionsRaw.split('|').map((s) => s.trim()).filter(Boolean).slice(0, NUMBER_EMOJIS.length);
+      if (options.length < 2) {
+        await interaction.reply({ content: 'Need at least two options (use \'A|B|C\').', ephemeral: true });
+        return;
+      }
+
+      const durationMs = parseDuration(durationStr);
+      const closeAt = Date.now() + durationMs;
+      await interaction.deferReply({ ephemeral: true });
+      const channel = interaction.channel;
+      const pollMsg = await channel.send({
+        content: `📊 ${question}\n\n${options.map((o, i) => `${NUMBER_EMOJIS[i]} ${o}`).join('\n')}\n\n⏳ closes <t:${Math.floor(closeAt/1000)}:R>`
+      });
+      trackBotMessage(pollMsg.id, pollMsg.channelId, pollMsg.guildId);
+      for (let i = 0; i < options.length; i++) {
+        await pollMsg.react(NUMBER_EMOJIS[i]);
+      }
+      const row = createPoll({
+        guildId: pollMsg.guildId || null,
+        channelId: pollMsg.channelId,
+        messageId: pollMsg.id,
+        creatorId: interaction.user.id,
+        question,
+        options,
+        multiVote: multi,
+        anonymous: false,
+        closesAt: closeAt,
+      });
+      schedulePollClosure(pollMsg.id, closeAt);
+      await interaction.editReply({ content: `Poll created in <#${pollMsg.channelId}>` });
+    }
+
+    if (commandName === 'gif') {
+      const query = interaction.options.getString('query', true);
+      await interaction.deferReply({ ephemeral: true });
+      const url = await searchTenorGif(query);
+      if (!url) {
+        await interaction.editReply({ content: 'No GIF found or Tenor not configured (set TENOR_API_KEY).' });
+        return;
+      }
+      const sent = await interaction.channel.send({ content: url });
+      trackBotMessage(sent.id, interaction.channelId, interaction.guildId);
+      await interaction.editReply({ content: 'Posted your GIF!' });
     }
 
     if (commandName === 'memory') {
@@ -932,10 +1235,72 @@ client.on('interactionCreate', async (interaction) => {
   });
 });
 
+client.on('messageReactionAdd', async (reaction, user) => {
+  await safeExecute('messageReactionAdd', async () => {
+    try {
+      if (user.bot) return;
+      if (reaction.partial) await reaction.fetch();
+      const message = reaction.message.partial ? await reaction.message.fetch() : reaction.message;
+      const emoji = reaction.emoji.name;
+      const optionIndex = NUMBER_EMOJIS.indexOf(emoji);
+      if (optionIndex === -1) return;
+      const poll = getPollByMessageId(message.id);
+      if (!poll || poll.closed) return;
+      // Single-choice polls only for MVP
+      // Remove any other number reactions by the same user
+      const userReactions = message.reactions.cache.filter(r => NUMBER_EMOJIS.includes(r.emoji.name));
+      for (const r of userReactions.values()) {
+        if (r.emoji.name !== emoji) {
+          try { await r.users.remove(user.id); } catch {}
+        }
+      }
+      recordVote({ pollId: poll.id, userId: user.id, optionIndex });
+    } catch (e) {
+      console.error('reactionAdd error', e);
+    }
+  });
+});
+
+client.on('messageReactionRemove', async (reaction, user) => {
+  await safeExecute('messageReactionRemove', async () => {
+    try {
+      if (user.bot) return;
+      if (reaction.partial) await reaction.fetch();
+      const message = reaction.message.partial ? await reaction.message.fetch() : reaction.message;
+      const emoji = reaction.emoji.name;
+      const optionIndex = NUMBER_EMOJIS.indexOf(emoji);
+      if (optionIndex === -1) return;
+      const poll = getPollByMessageId(message.id);
+      if (!poll || poll.closed) return;
+      // If user removes their number reaction, drop their vote
+      removeVote({ pollId: poll.id, userId: user.id });
+    } catch (e) {
+      console.error('reactionRemove error', e);
+    }
+  });
+});
+
 client.once('ready', async () => {
   await safeExecute('ready', async () => {
     console.log(`Logged in as ${client.user.tag}`);
     await registerCommands();
+    // Resume open polls on startup
+    try {
+      const open = listOpenPolls();
+      for (const poll of open) {
+        if (poll.closed) continue;
+        const remaining = poll.closes_at - Date.now();
+        if (remaining <= 0) {
+          const channel = await client.channels.fetch(poll.channel_id);
+          await postPollResults(poll, channel);
+          closePoll(poll.id);
+        } else {
+          schedulePollClosure(poll.message_id, poll.closes_at);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to resume polls', e);
+    }
   });
 });
 

@@ -11,6 +11,8 @@ A production-ready Discord bot built with **discord.js v14** and Grok (OpenAI-co
 - Per-user cooldown and duplicate spam guard.
 - Message edit handling with re-runs (60s window, throttled).
 - Image support (attachments, embeds, and image URLs) with vision model routing.
+- Polls via reactions with auto-close and results.
+- Tenor GIF search with `/gif`.
 - Admin command to purge bot messages from channels with flexible timeframes.
 
 ## Setup
@@ -36,6 +38,7 @@ Optional:
 - `GROK_VISION_MODEL` (optional override used only when images are present)
 - `BOT_NAME` (default: `GrokBuddy`)
 - `SUPER_ADMIN_USER_ID` (bypasses channel permission checks)
+- `TENOR_API_KEY` (for `/gif` command)
 
 ### 3) Run
 ```bash
@@ -62,6 +65,8 @@ Replying to another message with an image also works:
 /ask question: whats good
 /ask question: whats good ghost:false   (visible to everyone)
 /ask question: whats good ghost:true    (visible only to you - default)
+/poll question:"Best lunch?" options:"Pizza|Tacos|Sushi" duration:2h
+/gif query:"vibes"
 ```
 
 The `ghost` parameter controls message visibility:
@@ -95,6 +100,18 @@ The bot works fully in DMs with the same memory and conversation features as in 
 - All conversation history and preferences are preserved
 
 DMs are allowed for memory writes when the user has memory enabled.
+
+### Polls
+- Create a poll with mention syntax: reply with `@BotName poll "Question" "A" "B" --duration 2h`
+- Or use `/poll question:"..." options:"A|B|C" duration:1d`
+- Users vote by reacting with 1️⃣ 2️⃣ 3️⃣ ...
+- Bot auto-closes at the deadline and posts results.
+
+### GIFs
+- Search Tenor with `/gif query:"cats"` (requires `TENOR_API_KEY`)
+
+### Videos
+- Reply to a video with `@BotName` or use `/ask` while replying; the bot will acknowledge video context. Advanced transcription is not enabled by default.
 
 ## Notes
 - The bot stores full user messages **only** from allowlisted channels.
