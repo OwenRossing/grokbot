@@ -1,4 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const DEFAULT_MODEL = process.env.GROK_MODEL || 'grok-4-1-fast-reasoning-latest';
 const DEFAULT_VISION_MODEL = process.env.GROK_VISION_MODEL || 'grok-4-1-fast-reasoning-latest';
@@ -12,11 +14,26 @@ function normalizeBaseUrl(baseUrl) {
   return url;
 }
 
-const systemPrompt = process.env.SYSTEM_PROMPT ||
-  'You are {BOT_NAME}, an advanced AI assistant integrated into a Discord server. ' +
-  'Provide helpful, concise, and friendly responses to user queries. ' +
-  'When appropriate, use markdown formatting for code snippets and lists. ' +
-  'If you do not know the answer, respond with "idk tbh".';
+// Load the system prompt from env text or file; fall back to a baked-in default.
+const systemPrompt = (() => {
+  if (process.env.SYSTEM_PROMPT) return process.env.SYSTEM_PROMPT;
+
+  const promptPath = process.env.SYSTEM_PROMPT_FILE || './prompts/system_prompt.txt';
+  const resolved = path.resolve(process.cwd(), promptPath);
+
+  try {
+    const raw = fs.readFileSync(resolved, 'utf8');
+    return raw;
+  } catch (err) {
+    console.warn(`Falling back to default system prompt; failed to load ${resolved}: ${err.message}`);
+    return (
+      'You are {BOT_NAME}, an advanced AI assistant integrated into a Discord server. ' +
+      'Provide helpful, concise, and friendly responses to user queries. ' +
+      'When appropriate, use markdown formatting for code snippets and lists. ' +
+      'If you do not know the answer, respond with "idk tbh".'
+    );
+  }
+})();
 
 const fallbackErrorLine =
   'cant answer rn bro too busy gooning (grok api error)';
