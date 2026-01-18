@@ -1,5 +1,6 @@
 import { isSafeHttpsUrl } from '../utils/validators.js';
 import { MAX_IMAGE_BYTES, IMAGE_MIME } from '../utils/constants.js';
+import { isGif, gifToPngSequence } from './gifProcessor.js';
 
 export async function fetchImageAsDataUrl(url, resolveDirectMediaUrl) {
   const resolved = await resolveDirectMediaUrl(url);
@@ -147,6 +148,18 @@ export async function getReplyContext(message) {
       videos,
     };
   } catch {
+    return null;
+  }
+}
+
+export async function processGifUrl(url) {
+  const isGifUrl = await isGif(url);
+  if (!isGifUrl) return null;
+  try {
+    const frames = await gifToPngSequence(url);
+    return frames.length > 0 ? frames : null;
+  } catch (err) {
+    console.error('Failed to process GIF:', err);
     return null;
   }
 }

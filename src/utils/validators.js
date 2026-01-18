@@ -1,6 +1,6 @@
 import net from 'node:net';
 import dns from 'node:dns/promises';
-import { MAX_IMAGE_BYTES, IMAGE_MIME, IMAGE_EXT, VIDEO_EXT } from './constants.js';
+import { MAX_IMAGE_BYTES, IMAGE_MIME, IMAGE_EXT, VIDEO_EXT, VIDEO_MIME_PREFIXES } from './constants.js';
 
 function isPrivateIp(address) {
   if (net.isIPv4(address)) {
