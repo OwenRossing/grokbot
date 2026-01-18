@@ -1,4 +1,4 @@
-import { getUserSettings, isChannelAllowed, recordUserMessage, trackBotMessage, trackReply } from '../memory.js';
+import { getUserSettings, isChannelAllowed, recordUserMessage, trackBotMessage } from '../memory.js';
 import { getReplyId, shouldHandleEdit, trackReply as trackReplySync } from '../editSync.js';
 import { handlePrompt } from './handlePrompt.js';
 import { getMessageImageUrls, getMessageVideoUrls, stripMention, parseQuotedPoll, containsHateSpeech } from '../utils/validators.js';
