@@ -50,6 +50,8 @@ function buildMessages({
   channelSummary,
   guildSummary,
   knownUsers,
+  serverContext,
+  userContext,
 }) {
   const messages = [
     {
@@ -57,6 +59,20 @@ function buildMessages({
       content: systemPrompt.replace('{BOT_NAME}', botName),
     },
   ];
+
+  if (serverContext) {
+    messages.push({
+      role: 'system',
+      content: `Server info:\n${serverContext}`,
+    });
+  }
+
+  if (userContext) {
+    messages.push({
+      role: 'system',
+      content: `User info:\n${userContext}`,
+    });
+  }
 
   if (replyContext) {
     messages.push({
@@ -142,6 +158,8 @@ async function callOnce({
   channelSummary,
   guildSummary,
   knownUsers,
+  serverContext,
+  userContext,
 }) {
   const model = imageInputs?.length ? DEFAULT_VISION_MODEL || DEFAULT_MODEL : DEFAULT_MODEL;
   const baseUrl = normalizeBaseUrl(process.env.GROK_BASE_URL);
@@ -167,6 +185,8 @@ async function callOnce({
         channelSummary,
         guildSummary,
         knownUsers,
+        serverContext,
+        userContext,
       }),
     }),
   });
@@ -200,6 +220,8 @@ export async function getLLMResponse({
   channelSummary,
   guildSummary,
   knownUsers,
+  serverContext,
+  userContext,
 }) {
   try {
     return await callOnce({
@@ -214,6 +236,8 @@ export async function getLLMResponse({
       channelSummary,
       guildSummary,
       knownUsers,
+      serverContext,
+      userContext,
     });
   } catch (err) {
     if (err?.code === 'VISION_UNSUPPORTED') {
@@ -232,8 +256,8 @@ export async function getLLMResponse({
         recentChannelMessages,
         channelSummary,
         guildSummary,
-        knownUsers,
-      });
+        knownUsers,        serverContext,
+        userContext,      });
     } catch (retryErr) {
       if (retryErr?.code === 'VISION_UNSUPPORTED') {
         return 'image input needs a vision-capable model. set GROK_VISION_MODEL or use a multimodal GROK_MODEL.';

@@ -68,7 +68,34 @@ db.exec(`
     user_id TEXT NOT NULL,
     display_name TEXT NOT NULL,
     last_seen_at INTEGER NOT NULL,
+    joined_at INTEGER DEFAULT 0,
     PRIMARY KEY (guild_id, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS guild_roles (
+    guild_id TEXT NOT NULL,
+    role_id TEXT NOT NULL,
+    role_name TEXT NOT NULL,
+    color TEXT,
+    position INTEGER DEFAULT 0,
+    permissions TEXT,
+    PRIMARY KEY (guild_id, role_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS member_roles (
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    role_id TEXT NOT NULL,
+    PRIMARY KEY (guild_id, user_id, role_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS guild_metadata (
+    guild_id TEXT PRIMARY KEY,
+    name TEXT,
+    owner_id TEXT,
+    member_count INTEGER DEFAULT 0,
+    created_at INTEGER,
+    updated_at INTEGER
   );
 
   CREATE TABLE IF NOT EXISTS bot_messages (
@@ -175,6 +202,17 @@ try {
     throw err;
   }
 }
+try {
+  db.exec('ALTER TABLE guild_users ADD COLUMN joined_at INTEGER DEFAULT 0');
+} catch (err) {
+  if (!isDuplicateColumnError(err)) {
+    console.error(
+      'Failed to run migration: ALTER TABLE guild_users ADD COLUMN joined_at INTEGER DEFAULT 0',
+      err
+    );
+    throw err;
+  }
+}
 
 const insertMessageStmt = db.prepare(
   'INSERT INTO user_messages (user_id, channel_id, guild_id, content, created_at) VALUES (?, ?, ?, ?, ?)'
@@ -254,11 +292,12 @@ const upsertGuildProfileStmt = db.prepare(`
     last_summary_at = excluded.last_summary_at
 `);
 const upsertGuildUserStmt = db.prepare(`
-  INSERT INTO guild_users (guild_id, user_id, display_name, last_seen_at)
-  VALUES (?, ?, ?, ?)
+  INSERT INTO guild_users (guild_id, user_id, display_name, last_seen_at, joined_at)
+  VALUES (?, ?, ?, ?, ?)
   ON CONFLICT(guild_id, user_id) DO UPDATE SET
     display_name = excluded.display_name,
-    last_seen_at = excluded.last_seen_at
+    last_seen_at = excluded.last_seen_at,
+    joined_at = CASE WHEN joined_at = 0 THEN excluded.joined_at ELSE joined_at END
 `);
 const listGuildUsersStmt = db.prepare(
   "SELECT display_name FROM guild_users WHERE guild_id = ? AND last_seen_at > (strftime('%s', 'now') - 30 * 24 * 60 * 60) ORDER BY last_seen_at DESC LIMIT ?"
@@ -271,6 +310,64 @@ const getBotMessagesInChannelStmt = db.prepare(
 );
 const deleteBotMessageStmt = db.prepare(
   'DELETE FROM bot_messages WHERE message_id = ?'
+);
+
+const upsertGuildRoleStmt = db.prepare(`
+  INSERT INTO guild_roles (guild_id, role_id, role_name, color, position, permissions)
+  VALUES (?, ?, ?, ?, ?, ?)
+  ON CONFLICT(guild_id, role_id) DO UPDATE SET
+    role_name = excluded.role_name,
+    color = excluded.color,
+    position = excluded.position,
+    permissions = excluded.permissions
+`);
+
+const deleteGuildRoleStmt = db.prepare(
+  'DELETE FROM guild_roles WHERE guild_id = ? AND role_id = ?'
+);
+
+const deleteAllGuildRolesStmt = db.prepare(
+  'DELETE FROM guild_roles WHERE guild_id = ?'
+);
+
+const getGuildRolesStmt = db.prepare(
+  'SELECT role_id, role_name, color, position, permissions FROM guild_roles WHERE guild_id = ? ORDER BY position DESC'
+);
+
+const upsertMemberRoleStmt = db.prepare(`
+  INSERT INTO member_roles (guild_id, user_id, role_id)
+  VALUES (?, ?, ?)
+  ON CONFLICT(guild_id, user_id, role_id) DO NOTHING
+`);
+
+const deleteMemberRoleStmt = db.prepare(
+  'DELETE FROM member_roles WHERE guild_id = ? AND user_id = ? AND role_id = ?'
+);
+
+const deleteAllMemberRolesStmt = db.prepare(
+  'DELETE FROM member_roles WHERE guild_id = ? AND user_id = ?'
+);
+
+const getMemberRolesStmt = db.prepare(
+  'SELECT role_id FROM member_roles WHERE guild_id = ? AND user_id = ?'
+);
+
+const upsertGuildMetadataStmt = db.prepare(`
+  INSERT INTO guild_metadata (guild_id, name, owner_id, member_count, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?)
+  ON CONFLICT(guild_id) DO UPDATE SET
+    name = excluded.name,
+    owner_id = excluded.owner_id,
+    member_count = excluded.member_count,
+    updated_at = excluded.updated_at
+`);
+
+const getGuildMetadataStmt = db.prepare(
+  'SELECT * FROM guild_metadata WHERE guild_id = ?'
+);
+
+const getGuildUserStmt = db.prepare(
+  'SELECT * FROM guild_users WHERE guild_id = ? AND user_id = ?'
 );
 
 const SUMMARY_HINTS = [
@@ -407,7 +504,7 @@ export const recordUserMessage = db.transaction(({ userId, channelId, guildId, c
   );
 
   if (guildId && displayName) {
-    upsertGuildUserStmt.run(guildId, userId, displayName, Date.now());
+    upsertGuildUserStmt.run(guildId, userId, displayName, Date.now(), 0);
   }
 
   if (channelId) {
@@ -527,4 +624,123 @@ export function getBotMessagesInChannel(channelId, guildId, sinceTimestamp) {
  */
 export function deleteBotMessageRecord(messageId) {
   deleteBotMessageStmt.run(messageId);
+}
+
+// ===== GUILD METADATA =====
+
+export function upsertGuildMetadata({ guildId, name, ownerId, memberCount, createdAt }) {
+  upsertGuildMetadataStmt.run(
+    guildId,
+    name,
+    ownerId,
+    memberCount,
+    createdAt || Date.now(),
+    Date.now()
+  );
+}
+
+export function getGuildMetadata(guildId) {
+  return getGuildMetadataStmt.get(guildId) || null;
+}
+
+// ===== ROLE MANAGEMENT =====
+
+export function upsertGuildRole({ guildId, roleId, roleName, color, position, permissions }) {
+  upsertGuildRoleStmt.run(guildId, roleId, roleName, color || null, position || 0, permissions || null);
+}
+
+export function deleteGuildRole(guildId, roleId) {
+  deleteGuildRoleStmt.run(guildId, roleId);
+  // Also clean up member_roles
+  db.prepare('DELETE FROM member_roles WHERE guild_id = ? AND role_id = ?').run(guildId, roleId);
+}
+
+export function deleteAllGuildRoles(guildId) {
+  deleteAllGuildRolesStmt.run(guildId);
+}
+
+export function getGuildRoles(guildId) {
+  return getGuildRolesStmt.all(guildId);
+}
+
+// ===== MEMBER ROLE MANAGEMENT =====
+
+export function upsertMemberRole(guildId, userId, roleId) {
+  upsertMemberRoleStmt.run(guildId, userId, roleId);
+}
+
+export function deleteMemberRole(guildId, userId, roleId) {
+  deleteMemberRoleStmt.run(guildId, userId, roleId);
+}
+
+export function deleteAllMemberRoles(guildId, userId) {
+  deleteAllMemberRolesStmt.run(guildId, userId);
+}
+
+export function getMemberRoles(guildId, userId) {
+  return getMemberRolesStmt.all(guildId, userId).map(r => r.role_id);
+}
+
+// ===== USER MANAGEMENT =====
+
+export function upsertGuildUser({ guildId, userId, displayName, joinedAt }) {
+  const now = Date.now();
+  upsertGuildUserStmt.run(guildId, userId, displayName, now, joinedAt || now);
+}
+
+export function getGuildUser(guildId, userId) {
+  return getGuildUserStmt.get(guildId, userId) || null;
+}
+
+// ===== CONTEXT BUILDERS FOR LLM =====
+
+export function getServerContext(guildId) {
+  const metadata = getGuildMetadata(guildId);
+  const roles = getGuildRoles(guildId);
+  const recentUsers = listGuildUsersStmt.all(guildId, 15);
+  
+  if (!metadata && !roles.length && !recentUsers.length) {
+    return null;
+  }
+  
+  let context = '';
+  
+  if (metadata) {
+    context += `Server: ${metadata.name || 'Unknown'}\n`;
+    context += `Members: ${metadata.member_count || 0}\n`;
+  }
+  
+  if (roles.length > 0) {
+    const topRoles = roles.slice(0, 8).map(r => r.role_name).join(', ');
+    context += `Roles: ${topRoles}\n`;
+  }
+  
+  if (recentUsers.length > 0) {
+    const userNames = recentUsers.map(u => u.display_name).join(', ');
+    context += `Active members: ${userNames}`;
+  }
+  
+  return context.trim() || null;
+}
+
+export function getUserContext(guildId, userId) {
+  const user = getGuildUser(guildId, userId);
+  if (!user) return null;
+  
+  const roleIds = getMemberRoles(guildId, userId);
+  const roles = getGuildRoles(guildId).filter(r => roleIds.includes(r.role_id));
+  
+  let context = `User: ${user.display_name}\n`;
+  
+  if (user.joined_at > 0) {
+    const joinDate = new Date(user.joined_at);
+    context += `Joined: ${joinDate.toLocaleDateString()}\n`;
+  }
+  
+  if (roles.length > 0) {
+    const roleNames = roles.map(r => r.role_name).join(', ');
+    context += `Roles: ${roleNames}`;
+  }
+  
+  return context.trim() || null;
 }
