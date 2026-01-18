@@ -37,17 +37,9 @@ function fuzzyScore(search, target) {
 }
 
 /**
- * Lookup user ID by display name
+ * Find a role by name (case-insensitive, fuzzy)
  */
-export function getUserIdByName(guildId, displayName) {
-  const allUsers = getGuildUserNames(guildId, 500) || [];
-  const norm = normalize(displayName);
-  const match = allUsers.find((name) => normalize(name) === norm);
-  if (!match) return null;
-  // Since we only have names, we need to search the guild_users table directly
-  // For now, return the name as placeholder; caller must handle
-  return match;
-}
+function findRoleByName(roles, roleName) {
   if (!roleName) return null;
   const norm = normalize(roleName);
 
