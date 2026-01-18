@@ -98,7 +98,9 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
   if (!content && !imageUrls.length && !replyContextText) return;
 
   const replyFn = async (text) => {
-    const sent = await message.reply({ content: text });
+    const sent = isDirect 
+      ? await message.channel.send({ content: text })
+      : await message.reply({ content: text });
     trackReplySync({ userMessageId: message.id, botReplyId: sent.id });
     trackBotMessage(sent.id, message.channelId, message.guildId);
   };
