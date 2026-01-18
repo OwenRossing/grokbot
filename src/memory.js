@@ -263,11 +263,16 @@ const deleteGuildUsersStmt = db.prepare(
   'DELETE FROM guild_users WHERE guild_id = ?'
 );
 const recentMessagesStmt = db.prepare(
-  'SELECT content FROM user_messages WHERE user_id = ? ORDER BY created_at DESC LIMIT ?'
+  'SELECT content, created_at FROM user_messages WHERE user_id = ? ORDER BY created_at DESC LIMIT ?'
 );
-const recentChannelMessagesStmt = db.prepare(
-  'SELECT content FROM user_messages WHERE channel_id = ? AND user_id != ? ORDER BY created_at DESC LIMIT ?'
-);
+const recentChannelMessagesStmt = db.prepare(`
+  SELECT um.content, um.user_id, um.created_at, gu.display_name
+  FROM user_messages um
+  LEFT JOIN guild_users gu ON um.guild_id = gu.guild_id AND um.user_id = gu.user_id
+  WHERE um.channel_id = ? AND um.user_id != ?
+  ORDER BY um.created_at DESC
+  LIMIT ?
+`);
 const getChannelProfileStmt = db.prepare(
   'SELECT channel_id, guild_id, summary, message_count, last_summary_at FROM channel_profiles WHERE channel_id = ?'
 );
@@ -350,6 +355,22 @@ const deleteAllMemberRolesStmt = db.prepare(
 
 const getMemberRolesStmt = db.prepare(
   'SELECT role_id FROM member_roles WHERE guild_id = ? AND user_id = ?'
+);
+
+// List members for a given role (with display names)
+const listRoleMembersStmt = db.prepare(`
+  SELECT gu.display_name, mr.user_id
+  FROM member_roles mr
+  LEFT JOIN guild_users gu
+    ON mr.guild_id = gu.guild_id AND mr.user_id = gu.user_id
+  WHERE mr.guild_id = ? AND mr.role_id = ?
+  ORDER BY gu.display_name ASC
+  LIMIT ?
+`);
+
+// Count members in a given role
+const countRoleMembersStmt = db.prepare(
+  'SELECT COUNT(*) AS cnt FROM member_roles WHERE guild_id = ? AND role_id = ?'
 );
 
 const upsertGuildMetadataStmt = db.prepare(`
@@ -569,14 +590,33 @@ export function getProfileSummary(userId) {
 export function getRecentMessages(userId, limit = 4) {
   return recentMessagesStmt
     .all(userId, limit)
-    .map((row) => row.content)
+    .map((row) => {
+      const timestamp = new Date(row.created_at).toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      });
+      return `[${timestamp}] ${row.content}`;
+    })
     .filter(Boolean);
 }
 
 export function getRecentChannelMessages(channelId, excludeUserId, limit = 4) {
   return recentChannelMessagesStmt
     .all(channelId, excludeUserId, limit)
-    .map((row) => row.content)
+    .map((row) => {
+      const name = row.display_name || `User${row.user_id.slice(-4)}`;
+      const timestamp = new Date(row.created_at).toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      });
+      return `[${timestamp}] @${name}: ${row.content}`;
+    })
     .filter(Boolean);
 }
 
@@ -681,6 +721,17 @@ export function getMemberRoles(guildId, userId) {
   return getMemberRolesStmt.all(guildId, userId).map(r => r.role_id);
 }
 
+export function getRoleMemberNames(guildId, roleId, limit = 8) {
+  return listRoleMembersStmt
+    .all(guildId, roleId, limit)
+    .map(r => r.display_name || `User${String(r.user_id).slice(-4)}`);
+}
+
+export function getRoleMemberCount(guildId, roleId) {
+  const row = countRoleMembersStmt.get(guildId, roleId);
+  return row?.cnt || 0;
+}
+
 // ===== USER MANAGEMENT =====
 
 export function upsertGuildUser({ guildId, userId, displayName, joinedAt }) {
@@ -708,11 +759,26 @@ export function getServerContext(guildId) {
   if (metadata) {
     context += `Server: ${metadata.name || 'Unknown'}\n`;
     context += `Members: ${metadata.member_count || 0}\n`;
+    if (metadata.owner_id) {
+      const owner = getGuildUser(guildId, metadata.owner_id);
+      if (owner) {
+        context += `Owner: ${owner.display_name} (${metadata.owner_id})\n`;
+      }
+    }
   }
   
   if (roles.length > 0) {
     const topRoles = roles.slice(0, 8).map(r => r.role_name).join(', ');
     context += `Roles: ${topRoles}\n`;
+
+    // Include member counts and sample names for the top few roles
+    const sampleRoles = roles.slice(0, 3);
+    for (const role of sampleRoles) {
+      const count = getRoleMemberCount(guildId, role.role_id);
+      const names = getRoleMemberNames(guildId, role.role_id, 6);
+      const namesStr = names.join(', ');
+      context += `Role ${role.role_name}: ${count} members${namesStr ? ` (e.g., ${namesStr})` : ''}\n`;
+    }
   }
   
   if (recentUsers.length > 0) {
