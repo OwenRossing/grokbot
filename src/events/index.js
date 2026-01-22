@@ -160,8 +160,8 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
 
   // ===== READY EVENT =====
 
-  client.once('ready', async () => {
-    await safeExecute('ready', async () => {
+  client.once('clientReady', async () => {
+    await safeExecute('clientReady', async () => {
       console.log(`Logged in as ${client.user.tag}`);
       
       // Register commands

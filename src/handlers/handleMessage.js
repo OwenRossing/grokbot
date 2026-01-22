@@ -4,7 +4,7 @@ import { handlePrompt } from './handlePrompt.js';
 import { getMessageImageUrls, getMessageVideoUrls, stripMention, parseQuotedPoll, containsHateSpeech } from '../utils/validators.js';
 import { NUMBER_EMOJIS } from '../utils/constants.js';
 import { createPoll, getPollByMessageId, recordVote, removeVote } from '../polls.js';
-import { getReplyContext } from '../services/media.js';
+import { getReplyContext, processGifUrl } from '../services/media.js';
 import { routeIntent } from '../services/intentRouter.js';
 
 export async function handleMessage({ client, message, inMemoryTurns }) {
@@ -108,7 +108,9 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
   if (!content && !imageUrls.length && !replyContextText) return;
 
   const replyFn = async (text) => {
-    const sent = await message.reply({ content: text });
+    const sent = isDirect 
+      ? await message.channel.send({ content: text })
+      : await message.reply({ content: text });
     trackReplySync({ userMessageId: message.id, botReplyId: sent.id });
     trackBotMessage(sent.id, message.channelId, message.guildId);
   };
