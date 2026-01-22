@@ -177,6 +177,11 @@ export async function executePollCommand(interaction, pollTimers) {
 }
 
 export async function executeGifCommand(interaction) {
+  // Block specific user from using /gif command
+  if (interaction.user.id === '769000875569315850') {
+    await interaction.reply({ content: 'You cannot use this command.', ephemeral: true });
+    return;
+  }
   const query = interaction.options.getString('query', true);
   await interaction.deferReply({ ephemeral: true });
   const url = await searchGiphyGif(query, process.env.GIPHY_API_KEY);
