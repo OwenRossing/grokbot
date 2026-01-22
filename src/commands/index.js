@@ -4,6 +4,7 @@ export const askCommand = {
   data: new SlashCommandBuilder()
     .setName('ask')
     .setDescription('Ask the bot a question')
+    .setDMPermission(true)
     .addStringOption((option) =>
       option
         .setName('question')
@@ -22,6 +23,7 @@ export const pollCommand = {
   data: new SlashCommandBuilder()
     .setName('poll')
     .setDescription('Create a reaction-based poll')
+    .setDMPermission(false)
     .addStringOption((option) =>
       option
         .setName('question')
@@ -52,6 +54,7 @@ export const gifCommand = {
   data: new SlashCommandBuilder()
     .setName('gif')
     .setDescription('Search Tenor and post a GIF')
+    .setDMPermission(true)
     .addStringOption((option) =>
       option
         .setName('query')
@@ -64,6 +67,7 @@ export const memoryCommand = {
   data: new SlashCommandBuilder()
     .setName('memory')
     .setDescription('Manage your memory preferences')
+    .setDMPermission(true)
     .addSubcommand((sub) => sub.setName('on').setDescription('Enable memory'))
     .addSubcommand((sub) => sub.setName('off').setDescription('Disable memory'))
     .addSubcommand((sub) => sub.setName('view').setDescription('View stored summary')),
