@@ -199,36 +199,42 @@ async function callOnce({
 }) {
   const model = imageInputs?.length ? DEFAULT_VISION_MODEL || DEFAULT_MODEL : DEFAULT_MODEL;
   const baseUrl = normalizeBaseUrl(process.env.GROK_BASE_URL);
+  const payload = {
+    model,
+    // Enhanced parameters for more intelligent responses
+    temperature: LLM_TEMPERATURE,
+    top_p: LLM_TOP_P,
+    max_tokens: LLM_MAX_TOKENS,
+    messages: buildMessages({
+      botName,
+      profileSummary,
+      recentTurns,
+      userContent,
+      replyContext,
+      imageInputs,
+      recentUserMessages,
+      recentChannelMessages,
+      channelSummary,
+      guildSummary,
+      knownUsers,
+      serverContext,
+      userContext,
+    }),
+  };
+
+  // Some Grok models reject presence/frequency penalties.
+  if (!/grok-4-1-fast-reasoning/i.test(model)) {
+    payload.presence_penalty = LLM_PRESENCE_PENALTY;
+    payload.frequency_penalty = LLM_FREQUENCY_PENALTY;
+  }
+
   const res = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${process.env.GROK_API_KEY}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model,
-      // Enhanced parameters for more intelligent responses
-      temperature: LLM_TEMPERATURE,
-      top_p: LLM_TOP_P,
-      presence_penalty: LLM_PRESENCE_PENALTY,
-      frequency_penalty: LLM_FREQUENCY_PENALTY,
-      max_tokens: LLM_MAX_TOKENS,
-      messages: buildMessages({
-        botName,
-        profileSummary,
-        recentTurns,
-        userContent,
-        replyContext,
-        imageInputs,
-        recentUserMessages,
-        recentChannelMessages,
-        channelSummary,
-        guildSummary,
-        knownUsers,
-        serverContext,
-        userContext,
-      }),
-    }),
+    body: JSON.stringify(payload),
   });
 
   if (!res.ok) {
