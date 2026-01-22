@@ -6,11 +6,40 @@ const DEFAULT_MODEL = process.env.GROK_MODEL || 'grok-4-1-fast-reasoning-latest'
 const DEFAULT_VISION_MODEL = process.env.GROK_VISION_MODEL || 'grok-4-1-fast-reasoning-latest';
 
 // Configurable LLM parameters for enhanced intelligence
-const LLM_TEMPERATURE = process.env.LLM_TEMPERATURE !== undefined ? parseFloat(process.env.LLM_TEMPERATURE) : 0.3;
-const LLM_TOP_P = process.env.LLM_TOP_P !== undefined ? parseFloat(process.env.LLM_TOP_P) : 0.9;
-const LLM_PRESENCE_PENALTY = process.env.LLM_PRESENCE_PENALTY !== undefined ? parseFloat(process.env.LLM_PRESENCE_PENALTY) : 0.1;
-const LLM_FREQUENCY_PENALTY = process.env.LLM_FREQUENCY_PENALTY !== undefined ? parseFloat(process.env.LLM_FREQUENCY_PENALTY) : 0.2;
-const LLM_MAX_TOKENS = process.env.LLM_MAX_TOKENS !== undefined ? parseInt(process.env.LLM_MAX_TOKENS, 10) : 4096;
+// Helper to parse and validate numeric parameters
+function parseEnvFloat(envVar, defaultValue, min = -Infinity, max = Infinity) {
+  if (envVar === undefined) return defaultValue;
+  const parsed = parseFloat(envVar);
+  if (isNaN(parsed)) {
+    console.warn(`Invalid numeric value for parameter: "${envVar}". Using default: ${defaultValue}`);
+    return defaultValue;
+  }
+  if (parsed < min || parsed > max) {
+    console.warn(`Value ${parsed} out of range [${min}, ${max}]. Using default: ${defaultValue}`);
+    return defaultValue;
+  }
+  return parsed;
+}
+
+function parseEnvInt(envVar, defaultValue, min = -Infinity, max = Infinity) {
+  if (envVar === undefined) return defaultValue;
+  const parsed = parseInt(envVar, 10);
+  if (isNaN(parsed)) {
+    console.warn(`Invalid integer value for parameter: "${envVar}". Using default: ${defaultValue}`);
+    return defaultValue;
+  }
+  if (parsed < min || parsed > max) {
+    console.warn(`Value ${parsed} out of range [${min}, ${max}]. Using default: ${defaultValue}`);
+    return defaultValue;
+  }
+  return parsed;
+}
+
+const LLM_TEMPERATURE = parseEnvFloat(process.env.LLM_TEMPERATURE, 0.3, 0.0, 2.0);
+const LLM_TOP_P = parseEnvFloat(process.env.LLM_TOP_P, 0.9, 0.0, 1.0);
+const LLM_PRESENCE_PENALTY = parseEnvFloat(process.env.LLM_PRESENCE_PENALTY, 0.1, -2.0, 2.0);
+const LLM_FREQUENCY_PENALTY = parseEnvFloat(process.env.LLM_FREQUENCY_PENALTY, 0.2, -2.0, 2.0);
+const LLM_MAX_TOKENS = parseEnvInt(process.env.LLM_MAX_TOKENS, 4096, 1, 131072);
 
 function normalizeBaseUrl(baseUrl) {
   if (!baseUrl) return '';
