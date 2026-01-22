@@ -5,6 +5,13 @@ import path from 'node:path';
 const DEFAULT_MODEL = process.env.GROK_MODEL || 'grok-4-1-fast-reasoning-latest';
 const DEFAULT_VISION_MODEL = process.env.GROK_VISION_MODEL || 'grok-4-1-fast-reasoning-latest';
 
+// Configurable LLM parameters for enhanced intelligence
+const LLM_TEMPERATURE = parseFloat(process.env.LLM_TEMPERATURE) || 0.3;
+const LLM_TOP_P = parseFloat(process.env.LLM_TOP_P) || 0.9;
+const LLM_PRESENCE_PENALTY = parseFloat(process.env.LLM_PRESENCE_PENALTY) || 0.1;
+const LLM_FREQUENCY_PENALTY = parseFloat(process.env.LLM_FREQUENCY_PENALTY) || 0.2;
+const LLM_MAX_TOKENS = parseInt(process.env.LLM_MAX_TOKENS, 10) || 4096;
+
 function normalizeBaseUrl(baseUrl) {
   if (!baseUrl) return '';
   let url = baseUrl.replace(/\/+$/, '');
@@ -171,9 +178,12 @@ async function callOnce({
     },
     body: JSON.stringify({
       model,
-      // Tuning for clearer, more consistent reasoning
-      temperature: 0.2,
-      max_tokens: 4096,
+      // Enhanced parameters for more intelligent responses
+      temperature: LLM_TEMPERATURE,
+      top_p: LLM_TOP_P,
+      presence_penalty: LLM_PRESENCE_PENALTY,
+      frequency_penalty: LLM_FREQUENCY_PENALTY,
+      max_tokens: LLM_MAX_TOKENS,
       messages: buildMessages({
         botName,
         profileSummary,

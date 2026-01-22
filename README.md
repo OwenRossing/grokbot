@@ -34,11 +34,18 @@ Required vars:
 - `GROK_BASE_URL` (recommended: `https://api.x.ai`)
 
 Optional:
-- `GROK_MODEL` (default: `grok-4`)
+- `GROK_MODEL` (default: `grok-4-1-fast-reasoning-latest`)
 - `GROK_VISION_MODEL` (optional override used only when images are present)
 - `BOT_NAME` (default: `GrokBuddy`)
 - `SUPER_ADMIN_USER_ID` (bypasses channel permission checks)
 - `TENOR_API_KEY` (for `/gif` command)
+
+**AI Intelligence Enhancement Parameters:**
+- `LLM_TEMPERATURE` (default: `0.3`) - Controls randomness (0.0-2.0). Lower = more focused, Higher = more creative
+- `LLM_TOP_P` (default: `0.9`) - Nucleus sampling (0.0-1.0). Lower = more focused, Higher = more diverse
+- `LLM_PRESENCE_PENALTY` (default: `0.1`) - Encourages new topics (-2.0 to 2.0)
+- `LLM_FREQUENCY_PENALTY` (default: `0.2`) - Reduces repetition (-2.0 to 2.0)
+- `LLM_MAX_TOKENS` (default: `4096`) - Max tokens for completion (higher allows longer, more detailed responses)
 
 ### 3) Run
 ```bash
