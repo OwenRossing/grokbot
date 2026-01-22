@@ -4,7 +4,7 @@ import { handlePrompt } from './handlePrompt.js';
 import { getMessageImageUrls, getMessageVideoUrls, stripMention, parseQuotedPoll, containsHateSpeech } from '../utils/validators.js';
 import { NUMBER_EMOJIS } from '../utils/constants.js';
 import { createPoll, getPollByMessageId, recordVote, removeVote } from '../polls.js';
-import { getReplyContext, processGifUrl } from '../services/media.js';
+import { getReplyContext } from '../services/media.js';
 import { routeIntent } from '../services/intentRouter.js';
 
 export async function handleMessage({ client, message, inMemoryTurns }) {
