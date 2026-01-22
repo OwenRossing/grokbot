@@ -5,6 +5,42 @@ import path from 'node:path';
 const DEFAULT_MODEL = process.env.GROK_MODEL || 'grok-4-1-fast-reasoning-latest';
 const DEFAULT_VISION_MODEL = process.env.GROK_VISION_MODEL || 'grok-4-1-fast-reasoning-latest';
 
+// Configurable LLM parameters for enhanced intelligence
+// Helper to parse and validate numeric parameters
+function parseEnvFloat(envVar, defaultValue, min = -Infinity, max = Infinity) {
+  if (envVar === undefined) return defaultValue;
+  const parsed = parseFloat(envVar);
+  if (isNaN(parsed)) {
+    console.warn(`Invalid numeric value for parameter: "${envVar}". Using default: ${defaultValue}`);
+    return defaultValue;
+  }
+  if (parsed < min || parsed > max) {
+    console.warn(`Value ${parsed} out of range [${min}, ${max}]. Using default: ${defaultValue}`);
+    return defaultValue;
+  }
+  return parsed;
+}
+
+function parseEnvInt(envVar, defaultValue, min = -Infinity, max = Infinity) {
+  if (envVar === undefined) return defaultValue;
+  const parsed = parseInt(envVar, 10);
+  if (isNaN(parsed)) {
+    console.warn(`Invalid integer value for parameter: "${envVar}". Using default: ${defaultValue}`);
+    return defaultValue;
+  }
+  if (parsed < min || parsed > max) {
+    console.warn(`Value ${parsed} out of range [${min}, ${max}]. Using default: ${defaultValue}`);
+    return defaultValue;
+  }
+  return parsed;
+}
+
+const LLM_TEMPERATURE = parseEnvFloat(process.env.LLM_TEMPERATURE, 0.3, 0.0, 2.0);
+const LLM_TOP_P = parseEnvFloat(process.env.LLM_TOP_P, 0.9, 0.0, 1.0);
+const LLM_PRESENCE_PENALTY = parseEnvFloat(process.env.LLM_PRESENCE_PENALTY, 0.1, -2.0, 2.0);
+const LLM_FREQUENCY_PENALTY = parseEnvFloat(process.env.LLM_FREQUENCY_PENALTY, 0.2, -2.0, 2.0);
+const LLM_MAX_TOKENS = parseEnvInt(process.env.LLM_MAX_TOKENS, 4096, 1, 131072);
+
 function normalizeBaseUrl(baseUrl) {
   if (!baseUrl) return '';
   let url = baseUrl.replace(/\/+$/, '');
@@ -171,9 +207,12 @@ async function callOnce({
     },
     body: JSON.stringify({
       model,
-      // Tuning for clearer, more consistent reasoning
-      temperature: 0.5,
-      max_tokens: 8192,
+      // Enhanced parameters for more intelligent responses
+      temperature: LLM_TEMPERATURE,
+      top_p: LLM_TOP_P,
+      presence_penalty: LLM_PRESENCE_PENALTY,
+      frequency_penalty: LLM_FREQUENCY_PENALTY,
+      max_tokens: LLM_MAX_TOKENS,
       messages: buildMessages({
         botName,
         profileSummary,
@@ -257,8 +296,10 @@ export async function getLLMResponse({
         recentChannelMessages,
         channelSummary,
         guildSummary,
-        knownUsers,        serverContext,
-        userContext,      });
+        knownUsers,
+        serverContext,
+        userContext,
+      });
     } catch (retryErr) {
       if (retryErr?.code === 'VISION_UNSUPPORTED') {
         return 'image input needs a vision-capable model. set GROK_VISION_MODEL or use a multimodal GROK_MODEL.';
