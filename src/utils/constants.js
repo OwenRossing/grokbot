@@ -9,7 +9,7 @@ export const MAX_IMAGES = 4;
 
 // Regex patterns
 export const IMAGE_EXT = /\.(png|jpe?g|webp|gif)(\?.*)?$/i;
-export const IMAGE_MIME = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+export const IMAGE_MIME = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/apng'];
 export const VIDEO_EXT = /\.(mp4|mov|webm|mkv|m4v)(\?.*)?$/i;
 export const VIDEO_MIME_PREFIXES = ['video/'];
 

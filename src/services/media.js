@@ -2,23 +2,58 @@ import { isSafeHttpsUrl } from '../utils/validators.js';
 import { MAX_IMAGE_BYTES, IMAGE_MIME } from '../utils/constants.js';
 import { isGif, gifToPngSequence } from './gifProcessor.js';
 
-export async function fetchImageAsDataUrl(url, resolveDirectMediaUrl) {
-  const resolved = await resolveDirectMediaUrl(url);
-  const finalUrl = resolved || url;
-  const safe = await isSafeHttpsUrl(finalUrl);
+const GIF_EXT = /\.gif(\?.*)?$/i;
+
+function isDiscordCdnHost(hostname) {
+  const lower = hostname.toLowerCase();
+  return (
+    lower.endsWith('discordapp.com') ||
+    lower.endsWith('discordapp.net')
+  );
+}
+
+function getDiscordStaticUrl(rawUrl, format) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  if (!isDiscordCdnHost(parsed.hostname)) return null;
+  parsed.hostname = 'media.discordapp.net';
+  parsed.searchParams.set('format', format);
+  parsed.searchParams.set('width', '512');
+  parsed.searchParams.set('height', '512');
+  return parsed.toString();
+}
+
+function getImageUrlCandidates(url) {
+  const candidates = [url];
+  if (GIF_EXT.test(url)) {
+    const formats = ['png', 'webp', 'jpeg'];
+    for (const format of formats) {
+      const transformed = getDiscordStaticUrl(url, format);
+      if (transformed) candidates.push(transformed);
+    }
+  }
+  return Array.from(new Set(candidates));
+}
+
+async function fetchImageCandidateAsDataUrl(url) {
+  const safe = await isSafeHttpsUrl(url);
   if (!safe) {
-    console.warn('Image fetch blocked (unsafe URL):', finalUrl);
+    console.warn('Image fetch blocked (unsafe URL):', url);
     return null;
   }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
   try {
-    const response = await fetch(finalUrl, { signal: controller.signal, redirect: 'follow' });
+    const response = await fetch(url, { signal: controller.signal, redirect: 'follow' });
     if (!response.ok) {
-      console.warn('Image fetch failed:', finalUrl, response.status);
+      console.warn('Image fetch failed:', url, response.status);
       return null;
     }
-    if (response.url && response.url !== finalUrl) {
+    if (response.url && response.url !== url) {
       const redirectSafe = await isSafeHttpsUrl(response.url);
       if (!redirectSafe) {
         console.warn('Image fetch blocked (unsafe redirect):', response.url);
@@ -26,29 +61,25 @@ export async function fetchImageAsDataUrl(url, resolveDirectMediaUrl) {
       }
     }
     const contentType = response.headers.get('content-type')?.split(';')[0] || '';
+    const isGifType = contentType === 'image/gif' || url.toLowerCase().endsWith('.gif');
 
-    const isGif = contentType === 'image/gif' || finalUrl.toLowerCase().endsWith('.gif');
-
-    // For GIFs, skip inlining to avoid size limits; let the model fetch directly.
-    if (isGif) {
-      console.info('GIF passthrough for vision:', response.url || finalUrl);
-      return response.url || finalUrl;
+    // Prefer inlining static formats; defer GIFs to a final passthrough.
+    if (isGifType) {
+      return null;
     }
 
-    const validMimeTypes = [...IMAGE_MIME];
-
-    if (!validMimeTypes.includes(contentType)) {
-      console.warn('Image fetch rejected (invalid content-type):', contentType, finalUrl);
+    if (!IMAGE_MIME.includes(contentType)) {
+      console.warn('Image fetch rejected (invalid content-type):', contentType, url);
       return null;
     }
 
     const lengthHeader = response.headers.get('content-length');
     if (lengthHeader && Number(lengthHeader) > MAX_IMAGE_BYTES) {
-      console.warn('Image fetch rejected (too large):', lengthHeader, finalUrl);
+      console.warn('Image fetch rejected (too large):', lengthHeader, url);
       return null;
     }
     if (!response.body) {
-      console.warn('Image fetch failed (empty body):', finalUrl);
+      console.warn('Image fetch failed (empty body):', url);
       return null;
     }
     const chunks = [];
@@ -56,7 +87,7 @@ export async function fetchImageAsDataUrl(url, resolveDirectMediaUrl) {
     for await (const chunk of response.body) {
       total += chunk.length;
       if (total > MAX_IMAGE_BYTES) {
-        console.warn('Image fetch rejected (stream too large):', total, finalUrl);
+        console.warn('Image fetch rejected (stream too large):', total, url);
         return null;
       }
       chunks.push(chunk);
@@ -66,11 +97,29 @@ export async function fetchImageAsDataUrl(url, resolveDirectMediaUrl) {
     const mimeType = contentType || 'image/png';
     return `data:${mimeType};base64,${base64}`;
   } catch (err) {
-    console.error('Image fetch threw error:', finalUrl, err);
+    console.error('Image fetch threw error:', url, err);
     return null;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export async function fetchImageAsDataUrl(url, resolveDirectMediaUrl) {
+  const resolved = await resolveDirectMediaUrl(url);
+  const finalUrl = resolved || url;
+  const candidates = getImageUrlCandidates(finalUrl);
+  for (const candidate of candidates) {
+    const dataUrl = await fetchImageCandidateAsDataUrl(candidate);
+    if (dataUrl) return dataUrl;
+  }
+  if (GIF_EXT.test(finalUrl)) {
+    const safe = await isSafeHttpsUrl(finalUrl);
+    if (safe) {
+      console.info('GIF passthrough for vision:', finalUrl);
+      return finalUrl;
+    }
+  }
+  return null;
 }
 
 function parseGiphyIdFromUrl(u) {
