@@ -214,10 +214,10 @@ export async function executeLobotomizeCommand(interaction) {
   const scope = interaction.options.getString('scope') || 'me';
   
   if (scope === 'all') {
-    const isSuperAdmin = interaction.user.id === process.env.SUPER_ADMIN_USER_ID;
+    // const isSuperAdmin = interaction.user.id === process.env.SUPER_ADMIN_USER_ID;
     const hasAdminPerms = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
     
-    if (!isSuperAdmin && !hasAdminPerms) {
+    if (!hasAdminPerms) {
       await interaction.reply({ content: 'Admin only.', ephemeral: true });
       return;
     }
