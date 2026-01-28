@@ -205,6 +205,18 @@ export const autoreplyCommand = {
     ),
 };
 
+export const contextCommand = {
+  data: new SlashCommandBuilder()
+    .setName('context')
+    .setDescription('Inspect the context used for bot replies')
+    .setDMPermission(true)
+    .addSubcommand((sub) =>
+      sub
+        .setName('debug')
+        .setDescription('Show stored memory and context snapshot')
+    ),
+};
+
 export const commands = [
   askCommand,
   pollCommand,
@@ -221,4 +233,5 @@ export const commands = [
   serverInfoCommand,
   myDataCommand,
   autoreplyCommand,
+  contextCommand,
 ];

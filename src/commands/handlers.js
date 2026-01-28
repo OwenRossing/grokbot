@@ -9,7 +9,12 @@ import {
   viewMemory,
   getProfileSummary,
   getRecentMessages,
+  getRecentChannelMessages,
+  getChannelSummary,
+  getGuildSummary,
+  getGuildUserNames,
   getUserContext,
+  getServerContext,
   allowChannel,
   denyChannel,
   listChannels,
@@ -44,6 +49,9 @@ export async function executeAskCommand(interaction, inMemoryTurns, client) {
   const allowMemoryContext = memoryChannel && settings.memory_enabled;
   const displayName =
     interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
+  const username = interaction.user.username;
+  const globalName = interaction.user.globalName || '';
+  const channelType = interaction.channel?.isDMBased?.() ? 'dm' : 'guild';
 
   if (containsHateSpeech(question)) {
     await interaction.reply({ content: 'nah, not touching that.', ephemeral: true });
@@ -93,6 +101,9 @@ export async function executeAskCommand(interaction, inMemoryTurns, client) {
       guildId: interaction.guildId,
       content: question,
       displayName,
+      username,
+      globalName,
+      channelType,
     });
   }
 
@@ -108,6 +119,9 @@ export async function executeAskCommand(interaction, inMemoryTurns, client) {
     alreadyRecorded: allowMemoryContext,
     onTyping: typingFn,
     displayName,
+    userName: username,
+    userGlobalName: globalName,
+    channelType,
     inMemoryTurns,
     client,
   });
@@ -453,4 +467,80 @@ export async function executeAutoreplyCommand(interaction) {
   
   const status = enabled ? '✅ Auto-reply **enabled**. I\'ll respond to all your messages in this guild.' : '❌ Auto-reply **disabled**. You\'ll need to mention me.';
   await interaction.reply({ content: status, ephemeral: true });
+}
+
+export async function executeContextCommand(interaction) {
+  const sub = interaction.options.getSubcommand();
+  if (sub !== 'debug') {
+    await interaction.reply({ content: 'Unknown context command.', ephemeral: true });
+    return;
+  }
+
+  const settings = getUserSettings(interaction.user.id);
+  const isDirect = interaction.channel?.isDMBased?.() || interaction.guildId === null;
+  const memoryChannel = isDirect ? true : isChannelAllowed(interaction.channelId);
+  const allowMemoryContext = memoryChannel && settings.memory_enabled;
+
+  const profileSummary = allowMemoryContext ? getProfileSummary(interaction.user.id) : '';
+  const recentUserMessages = allowMemoryContext ? getRecentMessages(interaction.user.id, 3) : [];
+  const recentChannelMessages =
+    allowMemoryContext && interaction.channelId
+      ? getRecentChannelMessages(interaction.channelId, interaction.user.id, 3)
+      : [];
+  const channelSummary =
+    allowMemoryContext && interaction.channelId ? getChannelSummary(interaction.channelId) : '';
+  const guildSummary =
+    allowMemoryContext && interaction.guildId ? getGuildSummary(interaction.guildId) : '';
+  const knownUsers =
+    allowMemoryContext && interaction.guildId ? getGuildUserNames(interaction.guildId, 8) : [];
+  const serverContext =
+    allowMemoryContext && interaction.guildId ? getServerContext(interaction.guildId) : null;
+  const userContext =
+    allowMemoryContext && interaction.guildId ? getUserContext(interaction.guildId, interaction.user.id) : null;
+
+  const lastSeen = settings.last_seen_at
+    ? new Date(settings.last_seen_at).toLocaleString('en-US')
+    : 'n/a';
+  const lines = [];
+  lines.push(`Memory enabled: ${settings.memory_enabled ? 'yes' : 'no'}`);
+  lines.push(`Memory allowed here: ${allowMemoryContext ? 'yes' : 'no'}`);
+  lines.push(`Channel type: ${isDirect ? 'dm' : 'guild'}`);
+  lines.push(`Preferred name: ${settings.preferred_name || 'n/a'}`);
+  lines.push(`Pronouns: ${settings.pronouns || 'n/a'}`);
+  lines.push(`Last display name: ${settings.last_display_name || 'n/a'}`);
+  lines.push(`Last username: ${settings.last_username || 'n/a'}`);
+  lines.push(`Last global name: ${settings.last_global_name || 'n/a'}`);
+  lines.push(`Last seen: ${lastSeen}`);
+  lines.push(`Last channel type: ${settings.last_channel_type || 'n/a'}`);
+
+  if (profileSummary) {
+    lines.push('', '**Profile summary**', profileSummary);
+  }
+  if (recentUserMessages.length) {
+    lines.push('', '**Recent user messages**', recentUserMessages.map((m) => `- ${m}`).join('\n'));
+  }
+  if (recentChannelMessages.length) {
+    lines.push('', '**Recent channel messages**', recentChannelMessages.map((m) => `- ${m}`).join('\n'));
+  }
+  if (channelSummary) {
+    lines.push('', '**Channel summary**', channelSummary);
+  }
+  if (guildSummary) {
+    lines.push('', '**Server summary**', guildSummary);
+  }
+  if (knownUsers.length) {
+    lines.push('', `**Known users**`, knownUsers.join(', '));
+  }
+  if (serverContext) {
+    lines.push('', '**Server context**', serverContext);
+  }
+  if (userContext) {
+    lines.push('', '**User context**', userContext);
+  }
+
+  let content = lines.join('\n');
+  if (content.length > 1900) {
+    content = `${content.slice(0, 1850)}\n\n...(truncated)`;
+  }
+  await interaction.reply({ content: content || 'No context available.', ephemeral: true });
 }

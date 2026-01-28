@@ -5,6 +5,15 @@ export function addTurn(inMemoryTurns, userId, role, content) {
   return updated;
 }
 
+export function logContextSignal(label, payload) {
+  try {
+    const safePayload = payload ? JSON.stringify(payload) : '';
+    console.info(`[context] ${label}${safePayload ? ` ${safePayload}` : ''}`);
+  } catch (err) {
+    console.info(`[context] ${label}`);
+  }
+}
+
 export function isDM(message) {
   return message.channel?.isDMBased?.() || message.guildId === null;
 }

@@ -14,7 +14,9 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
   const memoryChannel = isDirect || isChannelAllowed(message.channelId);
   const settings = getUserSettings(message.author.id);
   const allowMemoryContext = memoryChannel && settings.memory_enabled;
-  const displayName = message.member?.displayName || message.author.username;
+  const displayName = message.member?.displayName || message.author.globalName || message.author.username;
+  const username = message.author.username;
+  const globalName = message.author.globalName || '';
   
   if (allowMemoryContext && message.content && message.content.trim()) {
     recordUserMessage({
@@ -23,6 +25,9 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
       guildId: message.guildId,
       content: message.content,
       displayName,
+      username,
+      globalName,
+      channelType: isDirect ? 'dm' : 'guild',
     });
   }
 
@@ -131,6 +136,9 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
     alreadyRecorded: allowMemoryContext,
     onTyping: typingFn,
     displayName,
+    userName: username,
+    userGlobalName: globalName,
+    channelType: isDirect ? 'dm' : 'guild',
     inMemoryTurns,
     client,
   });
@@ -145,7 +153,9 @@ export async function handleMessageUpdate({ client, newMessage, inMemoryTurns })
   const memoryChannel = isDirect || isChannelAllowed(hydrated.channelId);
   const settings = getUserSettings(hydrated.author.id);
   const allowMemoryContext = memoryChannel && settings.memory_enabled;
-  const displayName = hydrated.member?.displayName || hydrated.author.username;
+  const displayName = hydrated.member?.displayName || hydrated.author.globalName || hydrated.author.username;
+  const username = hydrated.author.username;
+  const globalName = hydrated.author.globalName || '';
 
   if (allowMemoryContext && hydrated.content && hydrated.content.trim()) {
     recordUserMessage({
@@ -154,6 +164,9 @@ export async function handleMessageUpdate({ client, newMessage, inMemoryTurns })
       guildId: hydrated.guildId,
       content: hydrated.content,
       displayName,
+      username,
+      globalName,
+      channelType: isDirect ? 'dm' : 'guild',
     });
   }
 
@@ -199,6 +212,9 @@ export async function handleMessageUpdate({ client, newMessage, inMemoryTurns })
     alreadyRecorded: allowMemoryContext,
     onTyping: typingFn,
     displayName,
+    userName: username,
+    userGlobalName: globalName,
+    channelType: isDirect ? 'dm' : 'guild',
     inMemoryTurns,
     client,
   });

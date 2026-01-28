@@ -88,6 +88,7 @@ function buildMessages({
   knownUsers,
   serverContext,
   userContext,
+  contextStack,
 }) {
   const messages = [
     {
@@ -95,6 +96,35 @@ function buildMessages({
       content: systemPrompt.replace('{BOT_NAME}', botName),
     },
   ];
+
+  if (contextStack) {
+    const lines = [];
+    if (contextStack.channelType) lines.push(`- Channel: ${contextStack.channelType}`);
+    if (typeof contextStack.memoryEnabled === 'boolean') {
+      lines.push(`- Memory enabled: ${contextStack.memoryEnabled ? 'yes' : 'no'}`);
+    }
+    if (typeof contextStack.memoryAllowed === 'boolean') {
+      lines.push(`- Memory allowed here: ${contextStack.memoryAllowed ? 'yes' : 'no'}`);
+    }
+    if (typeof contextStack.replyContext === 'boolean') {
+      lines.push(`- Replying to a message: ${contextStack.replyContext ? 'yes' : 'no'}`);
+    }
+    if (typeof contextStack.imageCount === 'number') {
+      lines.push(`- Images attached: ${contextStack.imageCount}`);
+    }
+    if (typeof contextStack.videoCount === 'number') {
+      lines.push(`- Videos attached: ${contextStack.videoCount}`);
+    }
+    if (contextStack.preferredName) lines.push(`- Preferred name: ${contextStack.preferredName}`);
+    if (contextStack.displayName) lines.push(`- Display name: ${contextStack.displayName}`);
+    if (contextStack.pronouns) lines.push(`- Pronouns: ${contextStack.pronouns}`);
+    if (lines.length) {
+      messages.push({
+        role: 'system',
+        content: `Context stack:\n${lines.join('\n')}`,
+      });
+    }
+  }
 
   if (serverContext) {
     messages.push({
@@ -196,6 +226,7 @@ async function callOnce({
   knownUsers,
   serverContext,
   userContext,
+  contextStack,
 }) {
   const model = imageInputs?.length ? DEFAULT_VISION_MODEL || DEFAULT_MODEL : DEFAULT_MODEL;
   const baseUrl = normalizeBaseUrl(process.env.GROK_BASE_URL);
@@ -219,6 +250,7 @@ async function callOnce({
       knownUsers,
       serverContext,
       userContext,
+      contextStack,
     }),
   };
 
@@ -268,6 +300,7 @@ export async function getLLMResponse({
   knownUsers,
   serverContext,
   userContext,
+  contextStack,
 }) {
   try {
     return await callOnce({
@@ -284,6 +317,7 @@ export async function getLLMResponse({
       knownUsers,
       serverContext,
       userContext,
+      contextStack,
     });
   } catch (err) {
     if (err?.code === 'VISION_UNSUPPORTED') {
@@ -306,6 +340,7 @@ export async function getLLMResponse({
         knownUsers,
         serverContext,
         userContext,
+        contextStack,
       });
     } catch (retryErr) {
       if (retryErr?.code === 'VISION_UNSUPPORTED') {

@@ -15,6 +15,7 @@ import {
   executeServerInfoCommand,
   executeMyDataCommand,
   executeAutoreplyCommand,
+  executeContextCommand,
 } from '../commands/handlers.js';
 
 export async function handleInteraction(interaction, { inMemoryTurns, pollTimers, client, superAdminId }) {
@@ -75,6 +76,8 @@ export async function handleInteraction(interaction, { inMemoryTurns, pollTimers
         return await executeMyDataCommand(interaction);
       case 'autoreply':
         return await executeAutoreplyCommand(interaction);
+      case 'context':
+        return await executeContextCommand(interaction);
       default:
         await interaction.reply({ content: 'Unknown command.', ephemeral: true });
     }

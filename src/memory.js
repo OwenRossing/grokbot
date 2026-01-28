@@ -32,7 +32,14 @@ db.exec(`
     autoreply_enabled INTEGER DEFAULT 0,
     profile_summary TEXT DEFAULT '',
     message_count INTEGER DEFAULT 0,
-    last_summary_at INTEGER DEFAULT 0
+    last_summary_at INTEGER DEFAULT 0,
+    preferred_name TEXT DEFAULT '',
+    pronouns TEXT DEFAULT '',
+    last_display_name TEXT DEFAULT '',
+    last_username TEXT DEFAULT '',
+    last_global_name TEXT DEFAULT '',
+    last_seen_at INTEGER DEFAULT 0,
+    last_channel_type TEXT DEFAULT ''
   );
 
   CREATE TABLE IF NOT EXISTS channel_allowlist (
@@ -149,6 +156,83 @@ try {
   }
 }
 try {
+  db.exec("ALTER TABLE user_settings ADD COLUMN preferred_name TEXT DEFAULT ''");
+} catch (err) {
+  if (!isDuplicateColumnError(err)) {
+    console.error(
+      "Failed to run migration: ALTER TABLE user_settings ADD COLUMN preferred_name TEXT DEFAULT ''",
+      err
+    );
+    throw err;
+  }
+}
+try {
+  db.exec("ALTER TABLE user_settings ADD COLUMN pronouns TEXT DEFAULT ''");
+} catch (err) {
+  if (!isDuplicateColumnError(err)) {
+    console.error(
+      "Failed to run migration: ALTER TABLE user_settings ADD COLUMN pronouns TEXT DEFAULT ''",
+      err
+    );
+    throw err;
+  }
+}
+try {
+  db.exec("ALTER TABLE user_settings ADD COLUMN last_display_name TEXT DEFAULT ''");
+} catch (err) {
+  if (!isDuplicateColumnError(err)) {
+    console.error(
+      "Failed to run migration: ALTER TABLE user_settings ADD COLUMN last_display_name TEXT DEFAULT ''",
+      err
+    );
+    throw err;
+  }
+}
+try {
+  db.exec("ALTER TABLE user_settings ADD COLUMN last_username TEXT DEFAULT ''");
+} catch (err) {
+  if (!isDuplicateColumnError(err)) {
+    console.error(
+      "Failed to run migration: ALTER TABLE user_settings ADD COLUMN last_username TEXT DEFAULT ''",
+      err
+    );
+    throw err;
+  }
+}
+try {
+  db.exec("ALTER TABLE user_settings ADD COLUMN last_global_name TEXT DEFAULT ''");
+} catch (err) {
+  if (!isDuplicateColumnError(err)) {
+    console.error(
+      "Failed to run migration: ALTER TABLE user_settings ADD COLUMN last_global_name TEXT DEFAULT ''",
+      err
+    );
+    throw err;
+  }
+}
+try {
+  db.exec('ALTER TABLE user_settings ADD COLUMN last_seen_at INTEGER DEFAULT 0');
+} catch (err) {
+  if (!isDuplicateColumnError(err)) {
+    console.error(
+      'Failed to run migration: ALTER TABLE user_settings ADD COLUMN last_seen_at INTEGER DEFAULT 0',
+      err
+    );
+    throw err;
+  }
+}
+try {
+  db.exec("ALTER TABLE user_settings ADD COLUMN last_channel_type TEXT DEFAULT ''");
+} catch (err) {
+  if (!isDuplicateColumnError(err)) {
+    console.error(
+      "Failed to run migration: ALTER TABLE user_settings ADD COLUMN last_channel_type TEXT DEFAULT ''",
+      err
+    );
+    throw err;
+  }
+}
+try {
   db.exec('ALTER TABLE channel_profiles ADD COLUMN guild_id TEXT');
 } catch (err) {
   if (!isDuplicateColumnError(err)) {
@@ -219,16 +303,40 @@ const insertMessageStmt = db.prepare(
   'INSERT INTO user_messages (user_id, channel_id, guild_id, content, created_at) VALUES (?, ?, ?, ?, ?)'
 );
 const getSettingsStmt = db.prepare(
-  'SELECT user_id, memory_enabled, profile_summary, message_count, last_summary_at FROM user_settings WHERE user_id = ?'
+  `SELECT user_id, memory_enabled, autoreply_enabled, profile_summary, message_count, last_summary_at,
+    preferred_name, pronouns, last_display_name, last_username, last_global_name, last_seen_at, last_channel_type
+   FROM user_settings WHERE user_id = ?`
 );
 const upsertSettingsStmt = db.prepare(`
-  INSERT INTO user_settings (user_id, memory_enabled, profile_summary, message_count, last_summary_at)
-  VALUES (?, ?, ?, ?, ?)
+  INSERT INTO user_settings (
+    user_id,
+    memory_enabled,
+    autoreply_enabled,
+    profile_summary,
+    message_count,
+    last_summary_at,
+    preferred_name,
+    pronouns,
+    last_display_name,
+    last_username,
+    last_global_name,
+    last_seen_at,
+    last_channel_type
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(user_id) DO UPDATE SET
     memory_enabled = excluded.memory_enabled,
+    autoreply_enabled = excluded.autoreply_enabled,
     profile_summary = excluded.profile_summary,
     message_count = excluded.message_count,
-    last_summary_at = excluded.last_summary_at
+    last_summary_at = excluded.last_summary_at,
+    preferred_name = excluded.preferred_name,
+    pronouns = excluded.pronouns,
+    last_display_name = excluded.last_display_name,
+    last_username = excluded.last_username,
+    last_global_name = excluded.last_global_name,
+    last_seen_at = excluded.last_seen_at,
+    last_channel_type = excluded.last_channel_type
 `);
 const allowChannelStmt = db.prepare(
   'INSERT INTO channel_allowlist (channel_id, enabled) VALUES (?, 1) ON CONFLICT(channel_id) DO UPDATE SET enabled = 1'
@@ -393,22 +501,42 @@ const getGuildUserStmt = db.prepare(
 );
 
 const SUMMARY_HINTS = [
-  { regex: /my name is ([^.!?]+)/i, label: 'Name' },
-  { regex: /call me ([^.!?]+)/i, label: 'Preferred name' },
-  { regex: /i (?:like|love) ([^.!?]+)/i, label: 'Likes' },
-  { regex: /i (?:hate|dislike) ([^.!?]+)/i, label: 'Dislikes' },
-  { regex: /my pronouns are ([^.!?]+)/i, label: 'Pronouns' },
+  { regex: /my name is ([^.!?]+)/i, label: 'Name', key: 'name' },
+  { regex: /call me ([^.!?]+)/i, label: 'Preferred name', key: 'preferred_name' },
+  { regex: /i (?:like|love) ([^.!?]+)/i, label: 'Likes', key: 'likes' },
+  { regex: /i (?:hate|dislike) ([^.!?]+)/i, label: 'Dislikes', key: 'dislikes' },
+  { regex: /my pronouns are ([^.!?]+)/i, label: 'Pronouns', key: 'pronouns' },
 ];
+
+function sanitizeProfileValue(value) {
+  if (!value) return '';
+  let cleaned = value
+    .replace(/<@!?\d+>/g, '')
+    .replace(/^@+/, '')
+    .replace(/["'`]/g, '')
+    .replace(/\\s+/g, ' ')
+    .trim();
+  if (!cleaned) return '';
+  if (cleaned.length > 64) cleaned = cleaned.slice(0, 64).trim();
+  if (!/[a-zA-Z0-9]/.test(cleaned)) return '';
+  return cleaned;
+}
 
 function extractSummaryNotes(message) {
   const notes = [];
+  const updates = {};
   for (const hint of SUMMARY_HINTS) {
     const match = message.match(hint.regex);
     if (match?.[1]) {
-      notes.push(`${hint.label}: ${match[1].trim()}`);
+      const cleaned = sanitizeProfileValue(match[1]);
+      if (!cleaned) continue;
+      notes.push(`${hint.label}: ${cleaned}`);
+      if (hint.key === 'preferred_name' || hint.key === 'pronouns' || hint.key === 'name') {
+        updates[hint.key] = cleaned;
+      }
     }
   }
-  return notes;
+  return { notes, updates };
 }
 
 function normalizeSummary(currentSummary, newNotes) {
@@ -431,6 +559,13 @@ export function getUserSettings(userId) {
       profile_summary: '',
       message_count: 0,
       last_summary_at: 0,
+      preferred_name: '',
+      pronouns: '',
+      last_display_name: '',
+      last_username: '',
+      last_global_name: '',
+      last_seen_at: 0,
+      last_channel_type: '',
     };
   }
   return row;
@@ -444,7 +579,14 @@ export function setUserMemory(userId, enabled) {
     current.autoreply_enabled || 0,
     current.profile_summary || '',
     current.message_count || 0,
-    current.last_summary_at || 0
+    current.last_summary_at || 0,
+    current.preferred_name || '',
+    current.pronouns || '',
+    current.last_display_name || '',
+    current.last_username || '',
+    current.last_global_name || '',
+    current.last_seen_at || 0,
+    current.last_channel_type || ''
   );
 }
 
@@ -456,7 +598,14 @@ export function setUserAutoreply(userId, enabled) {
     enabled ? 1 : 0,
     current.profile_summary || '',
     current.message_count || 0,
-    current.last_summary_at || 0
+    current.last_summary_at || 0,
+    current.preferred_name || '',
+    current.pronouns || '',
+    current.last_display_name || '',
+    current.last_username || '',
+    current.last_global_name || '',
+    current.last_seen_at || 0,
+    current.last_channel_type || ''
   );
 }
 
@@ -470,7 +619,21 @@ export function setUserAutoreply(userId, enabled) {
 export function forgetUser(userId) {
   deleteUserMessagesStmt.run(userId);
   const current = getUserSettings(userId);
-  upsertSettingsStmt.run(userId, current.memory_enabled, '', 0, 0);
+  upsertSettingsStmt.run(
+    userId,
+    current.memory_enabled,
+    current.autoreply_enabled || 0,
+    '',
+    0,
+    0,
+    '',
+    '',
+    current.last_display_name || '',
+    current.last_username || '',
+    current.last_global_name || '',
+    current.last_seen_at || 0,
+    current.last_channel_type || ''
+  );
 }
 
 export function viewMemory(userId) {
@@ -519,9 +682,10 @@ export function isChannelAllowed(channelId) {
   return row?.enabled === 1;
 }
 
-export const recordUserMessage = db.transaction(({ userId, channelId, guildId, content, displayName }) => {
+export const recordUserMessage = db.transaction(
+  ({ userId, channelId, guildId, content, displayName, username, globalName, channelType }) => {
   insertMessageStmt.run(userId, channelId, guildId, content, Date.now());
-  const notes = extractSummaryNotes(content);
+  const { notes, updates } = extractSummaryNotes(content);
   const current = getUserSettings(userId);
   const nextCount = (current.message_count || 0) + 1;
   const timeSinceLastSummary = Date.now() - (current.last_summary_at || 0);
@@ -531,12 +695,28 @@ export const recordUserMessage = db.transaction(({ userId, channelId, guildId, c
     ? normalizeSummary(current.profile_summary || '', notes)
     : current.profile_summary || '';
   const updatedLastSummaryAt = summaryDue ? Date.now() : current.last_summary_at || 0;
+  let preferredName = current.preferred_name || '';
+  if (updates.preferred_name) {
+    preferredName = updates.preferred_name;
+  } else if (updates.name) {
+    preferredName = updates.name;
+  }
+  const updatedPronouns = updates.pronouns || current.pronouns || '';
+  const now = Date.now();
   upsertSettingsStmt.run(
     userId,
     current.memory_enabled ?? 1,
+    current.autoreply_enabled ?? 0,
     updatedSummary,
     nextCount,
-    updatedLastSummaryAt
+    updatedLastSummaryAt,
+    preferredName,
+    updatedPronouns,
+    displayName || current.last_display_name || '',
+    username || current.last_username || '',
+    globalName || current.last_global_name || '',
+    now,
+    channelType || current.last_channel_type || ''
   );
 
   if (guildId && displayName) {

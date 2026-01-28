@@ -4,6 +4,7 @@ import { fetchImageAsDataUrl, resolveDirectMediaUrl } from '../services/media.js
 import { getLLMResponse } from '../llm.js';
 import { MAX_IMAGES } from '../utils/constants.js';
 import { containsHateSpeech, getMessageImageUrls, getMessageVideoUrls } from '../utils/validators.js';
+import { logContextSignal } from '../utils/helpers.js';
 
 export async function handlePrompt({
   userId,
@@ -18,6 +19,9 @@ export async function handlePrompt({
   alreadyRecorded = false,
   onTyping,
   displayName,
+  userName,
+  userGlobalName,
+  channelType,
   inMemoryTurns,
   client,
 }) {
@@ -33,7 +37,7 @@ export async function handlePrompt({
     return;
   }
 
-  const settings = getUserSettings(userId);
+  let settings = getUserSettings(userId);
   if (settings.memory_enabled && allowMemory && !alreadyRecorded) {
     let memoryContent = prompt || '';
     if (!memoryContent && imageUrls?.length) {
@@ -55,7 +59,11 @@ export async function handlePrompt({
       guildId,
       content: memoryContent,
       displayName,
+      username: userName,
+      globalName: userGlobalName,
+      channelType,
     });
+    settings = getUserSettings(userId);
   }
 
   const profileSummary = allowMemory ? getProfileSummary(userId) : '';
@@ -68,6 +76,30 @@ export async function handlePrompt({
   const knownUsers = allowMemory && guildId ? getGuildUserNames(guildId, 12) : [];
   const serverContext = allowMemory && guildId ? getServerContext(guildId) : null;
   const userContext = allowMemory && guildId ? getUserContext(guildId, userId) : null;
+  const contextStack = {
+    channelType: channelType || (guildId ? 'guild' : 'dm'),
+    memoryEnabled: Boolean(settings.memory_enabled),
+    memoryAllowed: Boolean(allowMemory),
+    replyContext: Boolean(replyContextText),
+    imageCount: imageUrls?.length || 0,
+    videoCount: videoUrls?.length || 0,
+    displayName,
+    preferredName: settings.preferred_name || '',
+    pronouns: settings.pronouns || '',
+  };
+
+  logContextSignal('prompt_context', {
+    userId,
+    guildId,
+    channelId,
+    channelType: contextStack.channelType,
+    memoryEnabled: contextStack.memoryEnabled,
+    memoryAllowed: contextStack.memoryAllowed,
+    replyContext: contextStack.replyContext,
+    imageCount: contextStack.imageCount,
+    videoCount: contextStack.videoCount,
+    modelHint: imageUrls?.length ? 'vision' : 'text',
+  });
 
   const imageInputs = [];
   if (imageUrls?.length) {
@@ -128,9 +160,17 @@ export async function handlePrompt({
     knownUsers,
     serverContext,
     userContext,
+    contextStack,
   });
   if (allowMemory) {
     addTurn('assistant', response);
+    logContextSignal('memory_snapshot', {
+      userId,
+      preferredName: settings.preferred_name || '',
+      pronouns: settings.pronouns || '',
+      messageCount: settings.message_count || 0,
+      lastSummaryAt: settings.last_summary_at || 0,
+    });
   }
   await reply(response);
 }
