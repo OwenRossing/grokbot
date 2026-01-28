@@ -134,6 +134,17 @@ try {
   }
 }
 try {
+  db.exec('ALTER TABLE user_settings ADD COLUMN autoreply_enabled INTEGER DEFAULT 0');
+} catch (err) {
+  if (!isDuplicateColumnError(err)) {
+    console.error(
+      'Failed to run migration: ALTER TABLE user_settings ADD COLUMN autoreply_enabled INTEGER DEFAULT 0',
+      err
+    );
+    throw err;
+  }
+}
+try {
   db.exec('ALTER TABLE user_settings ADD COLUMN message_count INTEGER DEFAULT 0');
 } catch (err) {
   if (!isDuplicateColumnError(err)) {
