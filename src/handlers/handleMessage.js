@@ -1,4 +1,4 @@
-import { getUserSettings, isChannelAllowed, recordUserMessage, trackBotMessage } from '../memory.js';
+import { getUserSettings, isChannelAllowed, queueUserMessage, trackBotMessage } from '../memory.js';
 import { getReplyId, shouldHandleEdit, trackReply as trackReplySync } from '../editSync.js';
 import { handlePrompt } from './handlePrompt.js';
 import { stripMention, parseQuotedPoll, containsHateSpeech } from '../utils/validators.js';
@@ -7,6 +7,7 @@ import { createPoll, getPollByMessageId, recordVote, removeVote } from '../polls
 import { getReplyContext } from '../services/media.js';
 import { routeIntent } from '../services/intentRouter.js';
 import { mergeMediaQueues, normalizeMediaFromMessage } from '../utils/media.js';
+import { shouldRecordMemoryMessage, trackMetric } from '../utils/helpers.js';
 
 export async function handleMessage({ client, message, inMemoryTurns }) {
   if (message.author.bot) return;
@@ -19,8 +20,10 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
   const username = message.author.username;
   const globalName = message.author.globalName || '';
   
-  if (allowMemoryContext && message.content && message.content.trim()) {
-    recordUserMessage({
+  const initialMediaItems = normalizeMediaFromMessage(message);
+  const didRecordMemory = allowMemoryContext && shouldRecordMemoryMessage(message.content, initialMediaItems.length > 0);
+  if (didRecordMemory) {
+    queueUserMessage({
       userId: message.author.id,
       channelId: message.channelId,
       guildId: message.guildId,
@@ -94,13 +97,17 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
     ? `Reply context from ${replyContext.author}: ${replyContext.text || '[no text]'}${replyContext.media?.length ? ' [media attached]' : ''}`
     : '';
 
-  const mediaItems = mergeMediaQueues(
-    normalizeMediaFromMessage(message),
-    replyContext?.media || []
-  );
+  const mediaItems = mergeMediaQueues(initialMediaItems, replyContext?.media || []);
 
   if (mediaItems.length) {
     console.info('Collected media items:', mediaItems.map((item) => `${item.type}:${item.url}`));
+    const counts = mediaItems.reduce((acc, item) => {
+      acc[item.type] = (acc[item.type] || 0) + 1;
+      return acc;
+    }, {});
+    if (counts.image) trackMetric('media.image', counts.image);
+    if (counts.gif) trackMetric('media.gif', counts.gif);
+    if (counts.video) trackMetric('media.video', counts.video);
   }
 
   if (!content && !mediaItems.length && !replyContextText) return;
@@ -125,7 +132,7 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
     replyContextText,
     mediaItems,
     allowMemory: allowMemoryContext,
-    alreadyRecorded: allowMemoryContext,
+    alreadyRecorded: didRecordMemory,
     onTyping: typingFn,
     displayName,
     userName: username,
@@ -149,8 +156,10 @@ export async function handleMessageUpdate({ client, newMessage, inMemoryTurns })
   const username = hydrated.author.username;
   const globalName = hydrated.author.globalName || '';
 
-  if (allowMemoryContext && hydrated.content && hydrated.content.trim()) {
-    recordUserMessage({
+  const hydratedMediaItems = normalizeMediaFromMessage(hydrated);
+  const didRecordHydrated = allowMemoryContext && shouldRecordMemoryMessage(hydrated.content, hydratedMediaItems.length > 0);
+  if (didRecordHydrated) {
+    queueUserMessage({
       userId: hydrated.author.id,
       channelId: hydrated.channelId,
       guildId: hydrated.guildId,
@@ -174,10 +183,7 @@ export async function handleMessageUpdate({ client, newMessage, inMemoryTurns })
   const replyContextText = replyContext
     ? `Reply context from ${replyContext.author}: ${replyContext.text || '[no text]'}${replyContext.media?.length ? ' [media attached]' : ''}`
     : '';
-  const mediaItems = mergeMediaQueues(
-    normalizeMediaFromMessage(hydrated),
-    replyContext?.media || []
-  );
+  const mediaItems = mergeMediaQueues(hydratedMediaItems, replyContext?.media || []);
   if (!content && !mediaItems.length && !replyContextText) return;
 
   const replyId = getReplyId(hydrated.id);
@@ -200,7 +206,7 @@ export async function handleMessageUpdate({ client, newMessage, inMemoryTurns })
     replyContextText,
     mediaItems,
     allowMemory: allowMemoryContext,
-    alreadyRecorded: allowMemoryContext,
+    alreadyRecorded: didRecordHydrated,
     onTyping: typingFn,
     displayName,
     userName: username,

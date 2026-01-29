@@ -73,6 +73,9 @@ const systemPrompt = (() => {
 
 const fallbackErrorLine =
   'cant answer rn bro too busy gooning (grok api error)';
+const failureWindowMs = 60_000;
+const failureTimestamps = [];
+let warnedVisionUnsupported = false;
 
 function buildMessages({
   botName,
@@ -96,6 +99,7 @@ function buildMessages({
       content: systemPrompt.replace('{BOT_NAME}', botName),
     },
   ];
+  const contextBlocks = [];
 
   if (contextStack) {
     const lines = [];
@@ -127,67 +131,47 @@ function buildMessages({
   }
 
   if (serverContext) {
-    messages.push({
-      role: 'system',
-      content: `Server info:\n${serverContext}`,
-    });
+    contextBlocks.push(`Server info:\n${serverContext}`);
   }
 
   if (userContext) {
-    messages.push({
-      role: 'system',
-      content: `User info:\n${userContext}`,
-    });
+    contextBlocks.push(`User info:\n${userContext}`);
   }
 
   if (replyContext) {
-    messages.push({
-      role: 'system',
-      content: replyContext,
-    });
+    contextBlocks.push(replyContext);
   }
 
   if (profileSummary) {
-    messages.push({
-      role: 'system',
-      content: `User profile summary: ${profileSummary}`,
-    });
+    contextBlocks.push(`User profile summary: ${profileSummary}`);
   }
 
   if (recentUserMessages?.length) {
     const formatted = recentUserMessages.map((msg) => `- ${msg}`).join('\n');
-    messages.push({
-      role: 'system',
-      content: `Recent user messages:\n${formatted}`,
-    });
+    contextBlocks.push(`Recent user messages:\n${formatted}`);
   }
 
   if (channelSummary) {
-    messages.push({
-      role: 'system',
-      content: `Channel summary: ${channelSummary}`,
-    });
+    contextBlocks.push(`Channel summary: ${channelSummary}`);
   }
 
   if (guildSummary) {
-    messages.push({
-      role: 'system',
-      content: `Server summary: ${guildSummary}`,
-    });
+    contextBlocks.push(`Server summary: ${guildSummary}`);
   }
 
   if (knownUsers?.length) {
-    messages.push({
-      role: 'system',
-      content: `Known users in this server: ${knownUsers.join(', ')}`,
-    });
+    contextBlocks.push(`Known users in this server: ${knownUsers.join(', ')}`);
   }
 
   if (recentChannelMessages?.length) {
     const formatted = recentChannelMessages.map((msg) => `- ${msg}`).join('\n');
+    contextBlocks.push(`Recent channel messages:\n${formatted}`);
+  }
+
+  if (contextBlocks.length) {
     messages.push({
       role: 'system',
-      content: `Recent channel messages:\n${formatted}`,
+      content: contextBlocks.join('\n\n'),
     });
   }
 
@@ -323,11 +307,24 @@ export async function getLLMResponse({
       contextStack,
     });
   } catch (err) {
+    const now = Date.now();
+    failureTimestamps.push(now);
+    while (failureTimestamps.length && now - failureTimestamps[0] > failureWindowMs) {
+      failureTimestamps.shift();
+    }
     if (err?.code === 'VISION_UNSUPPORTED') {
+      if (!warnedVisionUnsupported) {
+        console.warn('Vision-capable model not available; returning guidance to configure GROK_VISION_MODEL.');
+        warnedVisionUnsupported = true;
+      }
       return 'image input needs a vision-capable model. set GROK_VISION_MODEL or use a multimodal GROK_MODEL.';
     }
     console.error('LLM request failed (first attempt):', err);
-    await delay(300);
+    if (failureTimestamps.length >= 6) {
+      return fallbackErrorLine;
+    }
+    const retryDelay = failureTimestamps.length >= 3 ? 1200 : 300;
+    await delay(retryDelay);
     try {
       return await callOnce({
         botName,
@@ -347,7 +344,16 @@ export async function getLLMResponse({
         contextStack,
       });
     } catch (retryErr) {
+      const retryNow = Date.now();
+      failureTimestamps.push(retryNow);
+      while (failureTimestamps.length && retryNow - failureTimestamps[0] > failureWindowMs) {
+        failureTimestamps.shift();
+      }
       if (retryErr?.code === 'VISION_UNSUPPORTED') {
+        if (!warnedVisionUnsupported) {
+          console.warn('Vision-capable model not available; returning guidance to configure GROK_VISION_MODEL.');
+          warnedVisionUnsupported = true;
+        }
         return 'image input needs a vision-capable model. set GROK_VISION_MODEL or use a multimodal GROK_MODEL.';
       }
       console.error('LLM request failed (retry):', retryErr);

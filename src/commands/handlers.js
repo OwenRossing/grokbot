@@ -2,7 +2,7 @@ import { PermissionFlagsBits } from 'discord.js';
 import {
   getUserSettings,
   isChannelAllowed,
-  recordUserMessage,
+  queueUserMessage,
   setUserMemory,
   setUserAutoreply,
   forgetUser,
@@ -31,6 +31,7 @@ import { searchGiphyGif } from '../services/media.js';
 import { handlePrompt } from '../handlers/handlePrompt.js';
 import { DISCORD_INTERACTION_EXPIRED_CODE, DISCORD_UNKNOWN_MESSAGE_CODE, DISCORD_BULK_DELETE_LIMIT, NUMBER_EMOJIS } from '../utils/constants.js';
 import { parseDuration, containsHateSpeech } from '../utils/validators.js';
+import { shouldRecordMemoryMessage } from '../utils/helpers.js';
 import {
   createPoll,
   recordVote,
@@ -94,8 +95,9 @@ export async function executeAskCommand(interaction, inMemoryTurns, client) {
     }
   };
 
-  if (allowMemoryContext && question && question.trim()) {
-    recordUserMessage({
+  const didRecord = allowMemoryContext && shouldRecordMemoryMessage(question, false);
+  if (didRecord) {
+    queueUserMessage({
       userId: interaction.user.id,
       channelId: interaction.channelId,
       guildId: interaction.guildId,
@@ -116,7 +118,7 @@ export async function executeAskCommand(interaction, inMemoryTurns, client) {
     replyContextText: '',
     mediaItems: [],
     allowMemory: allowMemoryContext,
-    alreadyRecorded: allowMemoryContext,
+    alreadyRecorded: didRecord,
     onTyping: typingFn,
     displayName,
     userName: username,

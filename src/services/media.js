@@ -5,6 +5,22 @@ import { videoToPngStoryboard } from './videoProcessor.js';
 
 const GIF_EXT = /\.gif(\?.*)?$/i;
 const mediaFrameCache = new Map();
+const resolvedUrlCache = new Map();
+const failedFetchCache = new Map();
+
+function isRecentFailure(url) {
+  const entry = failedFetchCache.get(url);
+  if (!entry) return false;
+  if (Date.now() - entry.at > MEDIA_CACHE_TTL_MS) {
+    failedFetchCache.delete(url);
+    return false;
+  }
+  return true;
+}
+
+function markFailure(url, reason) {
+  failedFetchCache.set(url, { at: Date.now(), reason });
+}
 
 function isDiscordCdnHost(hostname) {
   const lower = hostname.toLowerCase();
@@ -42,9 +58,14 @@ function getImageUrlCandidates(url) {
 }
 
 async function fetchImageCandidateAsDataUrl(url) {
+  if (isRecentFailure(url)) {
+    console.warn('Skipping recent failed image URL:', url);
+    return null;
+  }
   const safe = await isSafeHttpsUrl(url);
   if (!safe) {
     console.warn('Image fetch blocked (unsafe URL):', url);
+    markFailure(url, 'unsafe');
     return null;
   }
   const controller = new AbortController();
@@ -53,12 +74,14 @@ async function fetchImageCandidateAsDataUrl(url) {
     const response = await fetch(url, { signal: controller.signal, redirect: 'follow' });
     if (!response.ok) {
       console.warn('Image fetch failed:', url, response.status);
+      markFailure(url, `status:${response.status}`);
       return null;
     }
     if (response.url && response.url !== url) {
       const redirectSafe = await isSafeHttpsUrl(response.url);
       if (!redirectSafe) {
         console.warn('Image fetch blocked (unsafe redirect):', response.url);
+        markFailure(url, 'unsafe-redirect');
         return null;
       }
     }
@@ -72,16 +95,19 @@ async function fetchImageCandidateAsDataUrl(url) {
 
     if (!IMAGE_MIME.includes(contentType)) {
       console.warn('Image fetch rejected (invalid content-type):', contentType, url);
+      markFailure(url, `content-type:${contentType}`);
       return null;
     }
 
     const lengthHeader = response.headers.get('content-length');
     if (lengthHeader && Number(lengthHeader) > MAX_IMAGE_BYTES) {
       console.warn('Image fetch rejected (too large):', lengthHeader, url);
+      markFailure(url, 'too-large');
       return null;
     }
     if (!response.body) {
       console.warn('Image fetch failed (empty body):', url);
+      markFailure(url, 'empty-body');
       return null;
     }
     const chunks = [];
@@ -90,6 +116,7 @@ async function fetchImageCandidateAsDataUrl(url) {
       total += chunk.length;
       if (total > MAX_IMAGE_BYTES) {
         console.warn('Image fetch rejected (stream too large):', total, url);
+        markFailure(url, 'stream-too-large');
         return null;
       }
       chunks.push(chunk);
@@ -97,9 +124,11 @@ async function fetchImageCandidateAsDataUrl(url) {
     const buffer = Buffer.concat(chunks);
     const base64 = buffer.toString('base64');
     const mimeType = contentType || 'image/png';
+    failedFetchCache.delete(url);
     return `data:${mimeType};base64,${base64}`;
   } catch (err) {
     console.error('Image fetch threw error:', url, err);
+    markFailure(url, 'exception');
     return null;
   } finally {
     clearTimeout(timeout);
@@ -166,12 +195,27 @@ async function resolveGiphyDirect(u, giphyApiKey) {
 }
 
 export async function resolveDirectMediaUrl(u, giphyApiKey) {
+  const cached = resolvedUrlCache.get(u);
+  if (cached && Date.now() - cached.at < MEDIA_CACHE_TTL_MS) {
+    return cached.value;
+  }
   const imageExt = /\.(png|jpe?g|webp|gif)(\?.*)?$/i;
-  if (imageExt.test(u)) return u;
+  if (imageExt.test(u)) {
+    resolvedUrlCache.set(u, { value: u, at: Date.now() });
+    return u;
+  }
   const giphyId = parseGiphyIdFromUrl(u);
-  if (giphyId) return buildGiphyDirectUrl(giphyId);
+  if (giphyId) {
+    const direct = buildGiphyDirectUrl(giphyId);
+    resolvedUrlCache.set(u, { value: direct, at: Date.now() });
+    return direct;
+  }
   const giphy = await resolveGiphyDirect(u, giphyApiKey);
-  if (giphy) return giphy;
+  if (giphy) {
+    resolvedUrlCache.set(u, { value: giphy, at: Date.now() });
+    return giphy;
+  }
+  resolvedUrlCache.set(u, { value: null, at: Date.now() });
   return null;
 }
 
@@ -219,6 +263,7 @@ export async function getReplyContext(message) {
 }
 
 export async function processGifUrl(url) {
+  if (isRecentFailure(url)) return null;
   const cached = mediaFrameCache.get(url);
   if (cached && Date.now() - cached.at < MEDIA_CACHE_TTL_MS) {
     return cached.frames;
@@ -229,15 +274,18 @@ export async function processGifUrl(url) {
     const frames = await gifToPngSequence(url);
     if (frames.length) {
       mediaFrameCache.set(url, { frames, at: Date.now() });
+      failedFetchCache.delete(url);
     }
     return frames.length > 0 ? frames : null;
   } catch (err) {
     console.error('Failed to process GIF:', err);
+    markFailure(url, 'gif-process');
     return null;
   }
 }
 
 export async function processVideoUrl(url) {
+  if (isRecentFailure(url)) return null;
   const cached = mediaFrameCache.get(url);
   if (cached && Date.now() - cached.at < MEDIA_CACHE_TTL_MS) {
     return cached.frames;
@@ -246,10 +294,12 @@ export async function processVideoUrl(url) {
     const frames = await videoToPngStoryboard(url);
     if (frames.length) {
       mediaFrameCache.set(url, { frames, at: Date.now() });
+      failedFetchCache.delete(url);
     }
     return frames.length > 0 ? frames : null;
   } catch (err) {
     console.error('Failed to process video:', err);
+    markFailure(url, 'video-process');
     return null;
   }
 }

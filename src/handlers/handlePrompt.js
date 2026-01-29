@@ -1,11 +1,39 @@
 import { checkRateLimit } from '../rateLimit.js';
-import { getUserSettings, isChannelAllowed, recordUserMessage, getProfileSummary, getRecentMessages, getRecentChannelMessages, getChannelSummary, getGuildSummary, getGuildUserNames, trackBotMessage, getServerContext, getUserContext } from '../memory.js';
+import { getUserSettings, queueUserMessage, getProfileSummary, getRecentMessages, getRecentChannelMessages, getChannelSummary, getGuildSummary, getGuildUserNames, trackBotMessage, getServerContext, getUserContext } from '../memory.js';
 import { fetchImageAsDataUrl, resolveDirectMediaUrl, processGifUrl, processVideoUrl } from '../services/media.js';
 import { getLLMResponse } from '../llm.js';
 import { MAX_MEDIA_INPUTS, MAX_MEDIA_FRAMES_PER_ITEM } from '../utils/constants.js';
 import { containsHateSpeech } from '../utils/validators.js';
-import { logContextSignal } from '../utils/helpers.js';
+import { logContextSignal, shouldRecordMemoryMessage, trackMetric } from '../utils/helpers.js';
 import { summarizeMediaQueue } from '../utils/media.js';
+
+const lastChannelSummary = new Map();
+const lastChannelSummaryAt = new Map();
+const lastGuildSummary = new Map();
+const lastGuildSummaryAt = new Map();
+const lastServerContext = new Map();
+const lastServerContextAt = new Map();
+const lastUserContext = new Map();
+const lastUserContextAt = new Map();
+const SUMMARY_REFRESH_MS = 10 * 60 * 1000;
+
+function shouldAttachSummary(cacheMap, cacheTimeMap, key, summary) {
+  if (!summary) return '';
+  const now = Date.now();
+  const last = cacheMap.get(key) || '';
+  const lastAt = cacheTimeMap.get(key) || 0;
+  if (last === summary && now - lastAt < SUMMARY_REFRESH_MS) {
+    return '';
+  }
+  cacheMap.set(key, summary);
+  cacheTimeMap.set(key, now);
+  return summary;
+}
+
+function mentionsMedia(text) {
+  if (!text) return false;
+  return /(image|photo|picture|gif|video|clip|screenshot|see|look|show|this|that|these|those)/i.test(text);
+}
 
 export async function handlePrompt({
   userId,
@@ -42,9 +70,12 @@ export async function handlePrompt({
   const mediaTraceId = mediaItems.length
     ? `media-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     : '';
+  if (mediaSummary.imageCount) trackMetric('media.image', mediaSummary.imageCount);
+  if (mediaSummary.gifCount) trackMetric('media.gif', mediaSummary.gifCount);
+  if (mediaSummary.videoCount) trackMetric('media.video', mediaSummary.videoCount);
 
   let settings = getUserSettings(userId);
-  if (settings.memory_enabled && allowMemory && !alreadyRecorded) {
+  if (settings.memory_enabled && allowMemory && !alreadyRecorded && shouldRecordMemoryMessage(prompt, mediaSummary.total > 0)) {
     let memoryContent = prompt || '';
     if (!memoryContent && mediaSummary.imageCount) {
       memoryContent = `User sent ${mediaSummary.imageCount} image(s).`;
@@ -64,7 +95,7 @@ export async function handlePrompt({
     if (!memoryContent && replyContextText) {
       memoryContent = 'User replied to a message.';
     }
-    recordUserMessage({
+    queueUserMessage({
       userId,
       channelId,
       guildId,
@@ -77,16 +108,31 @@ export async function handlePrompt({
     settings = getUserSettings(userId);
   }
 
-  const profileSummary = allowMemory ? getProfileSummary(userId) : '';
-  const recentUserMessages = allowMemory ? getRecentMessages(userId, 3) : [];
+  const trimmedPrompt = (prompt || '').trim();
+  const trimContext = trimmedPrompt.length > 0 && trimmedPrompt.length <= 12 && mediaSummary.total === 0 && !replyContextText;
+  const profileSummary = allowMemory && !trimContext ? getProfileSummary(userId) : '';
+  const recentUserMessages = allowMemory && !trimContext ? getRecentMessages(userId, 3) : [];
   const recentChannelMessages =
-    allowMemory && channelId ? getRecentChannelMessages(channelId, userId, 3) : [];
-  const channelSummary =
-    allowMemory && channelId ? getChannelSummary(channelId) : '';
-  const guildSummary = allowMemory && guildId ? getGuildSummary(guildId) : '';
-  const knownUsers = allowMemory && guildId ? getGuildUserNames(guildId, 12) : [];
-  const serverContext = allowMemory && guildId ? getServerContext(guildId) : null;
-  const userContext = allowMemory && guildId ? getUserContext(guildId, userId) : null;
+    allowMemory && channelId && !trimContext ? getRecentChannelMessages(channelId, userId, 3) : [];
+  const channelSummaryRaw =
+    allowMemory && channelId && !trimContext ? getChannelSummary(channelId) : '';
+  const guildSummaryRaw = allowMemory && guildId && !trimContext ? getGuildSummary(guildId) : '';
+  const knownUsers = allowMemory && guildId && !trimContext ? getGuildUserNames(guildId, 12) : [];
+  const serverContextRaw = allowMemory && guildId && !trimContext ? getServerContext(guildId) : null;
+  const userContextRaw = allowMemory && guildId && !trimContext ? getUserContext(guildId, userId) : null;
+  const channelSummary = channelId
+    ? shouldAttachSummary(lastChannelSummary, lastChannelSummaryAt, channelId, channelSummaryRaw)
+    : '';
+  const guildSummary = guildId
+    ? shouldAttachSummary(lastGuildSummary, lastGuildSummaryAt, guildId, guildSummaryRaw)
+    : '';
+  const serverContext = guildId
+    ? shouldAttachSummary(lastServerContext, lastServerContextAt, guildId, serverContextRaw)
+    : null;
+  const userContextKey = guildId ? `${guildId}:${userId}` : '';
+  const userContext = userContextKey
+    ? shouldAttachSummary(lastUserContext, lastUserContextAt, userContextKey, userContextRaw)
+    : null;
   const contextStack = {
     channelType: channelType || (guildId ? 'guild' : 'dm'),
     memoryEnabled: Boolean(settings.memory_enabled),
@@ -123,7 +169,13 @@ export async function handlePrompt({
 
   const imageInputs = [];
   const mediaNotes = [];
-  if (mediaItems?.length) {
+  const shouldProcessMedia = mediaItems?.length
+    ? (!trimmedPrompt || mentionsMedia(trimmedPrompt))
+    : false;
+  if (mediaItems?.length && !shouldProcessMedia) {
+    logContextSignal('media_skip', { reason: 'prompt_text_only', count: mediaItems.length });
+  }
+  if (mediaItems?.length && shouldProcessMedia) {
     for (const item of mediaItems) {
       if (imageInputs.length >= MAX_MEDIA_INPUTS) break;
       if (item.type === 'image') {
@@ -164,6 +216,9 @@ export async function handlePrompt({
 
   if (imageInputs.length) {
     console.info('Prepared image inputs for model:', imageInputs.map((v) => (typeof v === 'string' ? v.slice(0, 80) : v)));
+  }
+  if (mediaItems.length && imageInputs.length >= MAX_MEDIA_INPUTS) {
+    console.info('Media inputs capped at MAX_MEDIA_INPUTS:', MAX_MEDIA_INPUTS);
   }
   
   let effectivePrompt = prompt;

@@ -3,8 +3,8 @@ node_modules/
 
 # Environment variables (contains API keys and tokens)
 .env
-.env.local
-.env.production
+.env.*
+!.env.example
 
 # Database files (SQLite databases used by memory.js)
 *.db

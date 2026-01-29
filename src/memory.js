@@ -24,6 +24,9 @@ import Database from 'better-sqlite3';
 
 export const db = new Database('data.db');
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+const MESSAGE_DEBOUNCE_MS = Number.parseInt(process.env.MEMORY_DEBOUNCE_MS || '1500', 10);
+const MAX_USER_MESSAGES = Number.parseInt(process.env.MEMORY_MAX_MESSAGES_PER_USER || '500', 10);
+const MAX_USER_MESSAGE_AGE_DAYS = Number.parseInt(process.env.MEMORY_MAX_DAYS || '45', 10);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS user_settings (
@@ -312,6 +315,12 @@ try {
 
 const insertMessageStmt = db.prepare(
   'INSERT INTO user_messages (user_id, channel_id, guild_id, content, created_at) VALUES (?, ?, ?, ?, ?)'
+);
+const pruneOldMessagesStmt = db.prepare(
+  'DELETE FROM user_messages WHERE user_id = ? AND created_at < ?'
+);
+const pruneOverLimitStmt = db.prepare(
+  'DELETE FROM user_messages WHERE user_id = ? AND id NOT IN (SELECT id FROM user_messages WHERE user_id = ? ORDER BY created_at DESC LIMIT ?)'
 );
 const getSettingsStmt = db.prepare(
   `SELECT user_id, memory_enabled, autoreply_enabled, profile_summary, message_count, last_summary_at,
@@ -693,19 +702,35 @@ export function isChannelAllowed(channelId) {
   return row?.enabled === 1;
 }
 
-export const recordUserMessage = db.transaction(
-  ({ userId, channelId, guildId, content, displayName, username, globalName, channelType }) => {
-  insertMessageStmt.run(userId, channelId, guildId, content, Date.now());
+function recordUserMessageInternal({
+  userId,
+  channelId,
+  guildId,
+  content,
+  displayName,
+  username,
+  globalName,
+  channelType,
+}) {
+  const now = Date.now();
+  insertMessageStmt.run(userId, channelId, guildId, content, now);
+  if (MAX_USER_MESSAGE_AGE_DAYS > 0) {
+    const cutoff = now - MAX_USER_MESSAGE_AGE_DAYS * 24 * 60 * 60 * 1000;
+    pruneOldMessagesStmt.run(userId, cutoff);
+  }
+  if (MAX_USER_MESSAGES > 0) {
+    pruneOverLimitStmt.run(userId, userId, MAX_USER_MESSAGES);
+  }
   const { notes, updates } = extractSummaryNotes(content);
   const current = getUserSettings(userId);
   const nextCount = (current.message_count || 0) + 1;
-  const timeSinceLastSummary = Date.now() - (current.last_summary_at || 0);
+  const timeSinceLastSummary = now - (current.last_summary_at || 0);
   const shouldUpdateSummary = notes.length > 0 || timeSinceLastSummary > TWENTY_FOUR_HOURS_MS;
   const summaryDue = (notes.length > 0 && nextCount % 20 === 0) || timeSinceLastSummary > TWENTY_FOUR_HOURS_MS;
   const updatedSummary = summaryDue && shouldUpdateSummary
     ? normalizeSummary(current.profile_summary || '', notes)
     : current.profile_summary || '';
-  const updatedLastSummaryAt = summaryDue ? Date.now() : current.last_summary_at || 0;
+  const updatedLastSummaryAt = summaryDue ? now : current.last_summary_at || 0;
   let preferredName = current.preferred_name || '';
   if (updates.preferred_name) {
     preferredName = updates.preferred_name;
@@ -713,7 +738,6 @@ export const recordUserMessage = db.transaction(
     preferredName = updates.name;
   }
   const updatedPronouns = updates.pronouns || current.pronouns || '';
-  const now = Date.now();
   upsertSettingsStmt.run(
     userId,
     current.memory_enabled ?? 1,
@@ -731,7 +755,7 @@ export const recordUserMessage = db.transaction(
   );
 
   if (guildId && displayName) {
-    upsertGuildUserStmt.run(guildId, userId, displayName, Date.now(), 0);
+    upsertGuildUserStmt.run(guildId, userId, displayName, now, 0);
   }
 
   if (channelId) {
@@ -744,7 +768,7 @@ export const recordUserMessage = db.transaction(
         last_summary_at: 0,
       };
     const channelCount = (channelProfile.message_count || 0) + 1;
-    const channelTimeSinceLastSummary = Date.now() - (channelProfile.last_summary_at || 0);
+    const channelTimeSinceLastSummary = now - (channelProfile.last_summary_at || 0);
     const channelShouldUpdateSummary = notes.length > 0 || channelTimeSinceLastSummary > TWENTY_FOUR_HOURS_MS;
     const channelSummaryDue =
       (notes.length > 0 && channelCount % 20 === 0) ||
@@ -753,7 +777,7 @@ export const recordUserMessage = db.transaction(
       ? normalizeSummary(channelProfile.summary || '', notes)
       : channelProfile.summary || '';
     const channelLastSummaryAt = channelSummaryDue
-      ? Date.now()
+      ? now
       : channelProfile.last_summary_at || 0;
     upsertChannelProfileStmt.run(
       channelId,
@@ -773,7 +797,7 @@ export const recordUserMessage = db.transaction(
         last_summary_at: 0,
       };
     const guildCount = (guildProfile.message_count || 0) + 1;
-    const guildTimeSinceLastSummary = Date.now() - (guildProfile.last_summary_at || 0);
+    const guildTimeSinceLastSummary = now - (guildProfile.last_summary_at || 0);
     const guildShouldUpdateSummary = notes.length > 0 || guildTimeSinceLastSummary > TWENTY_FOUR_HOURS_MS;
     const guildSummaryDue =
       (notes.length > 0 && guildCount % 30 === 0) ||
@@ -782,11 +806,57 @@ export const recordUserMessage = db.transaction(
       ? normalizeSummary(guildProfile.summary || '', notes)
       : guildProfile.summary || '';
     const guildLastSummaryAt = guildSummaryDue
-      ? Date.now()
+      ? now
       : guildProfile.last_summary_at || 0;
     upsertGuildProfileStmt.run(guildId, guildSummary, guildCount, guildLastSummaryAt);
   }
+}
+
+export const recordUserMessage = db.transaction((payload) => {
+  recordUserMessageInternal(payload);
 });
+
+const pendingMessages = new Map();
+
+export function queueUserMessage(payload) {
+  if (!payload?.userId) return;
+  if (!MESSAGE_DEBOUNCE_MS || MESSAGE_DEBOUNCE_MS <= 0) {
+    recordUserMessage(payload);
+    return;
+  }
+  const key = `${payload.userId}:${payload.channelId || 'dm'}`;
+  const existing = pendingMessages.get(key) || { items: [], timer: null };
+  existing.items.push(payload);
+  if (!existing.timer) {
+    existing.timer = setTimeout(() => {
+      const entry = pendingMessages.get(key);
+      if (!entry) return;
+      pendingMessages.delete(key);
+      db.transaction(() => {
+        for (const item of entry.items) {
+          recordUserMessageInternal(item);
+        }
+      })();
+    }, MESSAGE_DEBOUNCE_MS);
+  }
+  pendingMessages.set(key, existing);
+}
+
+export function flushQueuedMessages() {
+  for (const [key, entry] of pendingMessages.entries()) {
+    pendingMessages.delete(key);
+    try {
+      if (entry.timer) clearTimeout(entry.timer);
+      db.transaction(() => {
+        for (const item of entry.items) {
+          recordUserMessageInternal(item);
+        }
+      })();
+    } catch (err) {
+      console.error('Failed to flush queued memory writes:', err);
+    }
+  }
+}
 
 export function getProfileSummary(userId) {
   const current = getUserSettings(userId);

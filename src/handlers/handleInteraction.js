@@ -17,11 +17,13 @@ import {
   executeAutoreplyCommand,
   executeContextCommand,
 } from '../commands/handlers.js';
+import { trackMetric } from '../utils/helpers.js';
 
 export async function handleInteraction(interaction, { inMemoryTurns, pollTimers, client, superAdminId }) {
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName } = interaction;
+  trackMetric(`command.${commandName}`);
   const isSuperAdmin = interaction.user.id === superAdminId;
   const hasAdminPerms =
     isSuperAdmin || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
