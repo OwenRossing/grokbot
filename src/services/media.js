@@ -1,8 +1,10 @@
 import { isSafeHttpsUrl } from '../utils/validators.js';
-import { MAX_IMAGE_BYTES, IMAGE_MIME } from '../utils/constants.js';
+import { MAX_IMAGE_BYTES, IMAGE_MIME, MEDIA_CACHE_TTL_MS } from '../utils/constants.js';
 import { isGif, gifToPngSequence } from './gifProcessor.js';
+import { videoToPngStoryboard } from './videoProcessor.js';
 
 const GIF_EXT = /\.gif(\?.*)?$/i;
+const mediaFrameCache = new Map();
 
 function isDiscordCdnHost(hostname) {
   const lower = hostname.toLowerCase();
@@ -204,14 +206,12 @@ export async function getReplyContext(message) {
   try {
     const referenced = await message.channel.messages.fetch(replyId);
     const text = referenced.content?.trim() || '';
-    const { getMessageImageUrls, getMessageVideoUrls } = await import('../utils/validators.js');
-    const images = getMessageImageUrls(referenced);
-    const videos = getMessageVideoUrls(referenced);
+    const { normalizeMediaFromMessage } = await import('../utils/media.js');
+    const media = normalizeMediaFromMessage(referenced);
     return {
       author: referenced.author?.username || 'Unknown',
       text,
-      images,
-      videos,
+      media,
     };
   } catch {
     return null;
@@ -219,13 +219,37 @@ export async function getReplyContext(message) {
 }
 
 export async function processGifUrl(url) {
+  const cached = mediaFrameCache.get(url);
+  if (cached && Date.now() - cached.at < MEDIA_CACHE_TTL_MS) {
+    return cached.frames;
+  }
   const isGifUrl = await isGif(url);
   if (!isGifUrl) return null;
   try {
     const frames = await gifToPngSequence(url);
+    if (frames.length) {
+      mediaFrameCache.set(url, { frames, at: Date.now() });
+    }
     return frames.length > 0 ? frames : null;
   } catch (err) {
     console.error('Failed to process GIF:', err);
+    return null;
+  }
+}
+
+export async function processVideoUrl(url) {
+  const cached = mediaFrameCache.get(url);
+  if (cached && Date.now() - cached.at < MEDIA_CACHE_TTL_MS) {
+    return cached.frames;
+  }
+  try {
+    const frames = await videoToPngStoryboard(url);
+    if (frames.length) {
+      mediaFrameCache.set(url, { frames, at: Date.now() });
+    }
+    return frames.length > 0 ? frames : null;
+  } catch (err) {
+    console.error('Failed to process video:', err);
     return null;
   }
 }

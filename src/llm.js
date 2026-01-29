@@ -219,6 +219,7 @@ async function callOnce({
   userContent,
   replyContext,
   imageInputs,
+  forceVision,
   recentUserMessages,
   recentChannelMessages,
   channelSummary,
@@ -228,7 +229,7 @@ async function callOnce({
   userContext,
   contextStack,
 }) {
-  const model = imageInputs?.length ? DEFAULT_VISION_MODEL || DEFAULT_MODEL : DEFAULT_MODEL;
+  const model = (imageInputs?.length || forceVision) ? DEFAULT_VISION_MODEL || DEFAULT_MODEL : DEFAULT_MODEL;
   const baseUrl = normalizeBaseUrl(process.env.GROK_BASE_URL);
   const payload = {
     model,
@@ -293,6 +294,7 @@ export async function getLLMResponse({
   userContent,
   replyContext,
   imageInputs,
+  forceVision,
   recentUserMessages,
   recentChannelMessages,
   channelSummary,
@@ -310,6 +312,7 @@ export async function getLLMResponse({
       userContent,
       replyContext,
       imageInputs,
+      forceVision,
       recentUserMessages,
       recentChannelMessages,
       channelSummary,
@@ -333,6 +336,7 @@ export async function getLLMResponse({
         userContent,
         replyContext,
         imageInputs,
+        forceVision,
         recentUserMessages,
         recentChannelMessages,
         channelSummary,

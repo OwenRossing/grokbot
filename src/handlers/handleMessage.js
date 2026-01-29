@@ -1,11 +1,12 @@
 import { getUserSettings, isChannelAllowed, recordUserMessage, trackBotMessage } from '../memory.js';
 import { getReplyId, shouldHandleEdit, trackReply as trackReplySync } from '../editSync.js';
 import { handlePrompt } from './handlePrompt.js';
-import { getMessageImageUrls, getMessageVideoUrls, stripMention, parseQuotedPoll, containsHateSpeech } from '../utils/validators.js';
+import { stripMention, parseQuotedPoll, containsHateSpeech } from '../utils/validators.js';
 import { NUMBER_EMOJIS } from '../utils/constants.js';
 import { createPoll, getPollByMessageId, recordVote, removeVote } from '../polls.js';
 import { getReplyContext } from '../services/media.js';
 import { routeIntent } from '../services/intentRouter.js';
+import { mergeMediaQueues, normalizeMediaFromMessage } from '../utils/media.js';
 
 export async function handleMessage({ client, message, inMemoryTurns }) {
   if (message.author.bot) return;
@@ -90,27 +91,19 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
 
   const replyContext = await getReplyContext(message);
   const replyContextText = replyContext
-    ? `Reply context from ${replyContext.author}: ${replyContext.text || '[no text]'}${(replyContext.videos?.length ? ' [video referenced]' : '')}`
+    ? `Reply context from ${replyContext.author}: ${replyContext.text || '[no text]'}${replyContext.media?.length ? ' [media attached]' : ''}`
     : '';
-  
-  // Collect image URLs (GIFs remain as URLs so the model can fetch them directly)
-  const imageUrls = [
-    ...getMessageImageUrls(message),
-    ...(replyContext?.images || []),
-  ];
 
-  if (imageUrls.length) {
-    console.info('Collected image URLs:', imageUrls);
+  const mediaItems = mergeMediaQueues(
+    normalizeMediaFromMessage(message),
+    replyContext?.media || []
+  );
+
+  if (mediaItems.length) {
+    console.info('Collected media items:', mediaItems.map((item) => `${item.type}:${item.url}`));
   }
-  
-  const videoUrls = [
-    ...getMessageVideoUrls(message),
-    ...(replyContext?.videos || []),
-  ];
-  if (videoUrls.length) {
-    console.info('Collected video URLs:', videoUrls);
-  }
-  if (!content && !imageUrls.length && !replyContextText) return;
+
+  if (!content && !mediaItems.length && !replyContextText) return;
 
   const replyFn = async (text) => {
     const sent = isDirect 
@@ -130,8 +123,7 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
     prompt: content,
     reply: replyFn,
     replyContextText,
-    imageUrls,
-    videoUrls,
+    mediaItems,
     allowMemory: allowMemoryContext,
     alreadyRecorded: allowMemoryContext,
     onTyping: typingFn,
@@ -180,13 +172,13 @@ export async function handleMessageUpdate({ client, newMessage, inMemoryTurns })
     : stripMention(hydrated.content, client.user.id);
   const replyContext = await getReplyContext(hydrated);
   const replyContextText = replyContext
-    ? `Reply context from ${replyContext.author}: ${replyContext.text || '[no text]'}`
+    ? `Reply context from ${replyContext.author}: ${replyContext.text || '[no text]'}${replyContext.media?.length ? ' [media attached]' : ''}`
     : '';
-  const imageUrls = [
-    ...getMessageImageUrls(hydrated),
-    ...(replyContext?.images || []),
-  ];
-  if (!content && !imageUrls.length && !replyContextText) return;
+  const mediaItems = mergeMediaQueues(
+    normalizeMediaFromMessage(hydrated),
+    replyContext?.media || []
+  );
+  if (!content && !mediaItems.length && !replyContextText) return;
 
   const replyId = getReplyId(hydrated.id);
   if (!replyId) return;
@@ -206,8 +198,7 @@ export async function handleMessageUpdate({ client, newMessage, inMemoryTurns })
     prompt: content,
     reply: replyFn,
     replyContextText,
-    imageUrls,
-    videoUrls: [],
+    mediaItems,
     allowMemory: allowMemoryContext,
     alreadyRecorded: allowMemoryContext,
     onTyping: typingFn,

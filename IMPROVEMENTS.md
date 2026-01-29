@@ -1,21 +1,31 @@
-# Bot Improvement Ideas
+# Bot Improvement Ideas: Media Understanding
 
-## Memory & Context Layer
-- Persist richer per-user memory summaries in `data.db` instead of relying solely on the volatile `inMemoryTurns` map; store recent “topics” and trusted display names so the bot knows who it is talking to even after a restart.  
-- Improve the `src/memory.js` flows by tagging conversations with channel intention (DM vs. allowlisted guild) and surfacing that state to handlers so responses can reference prior opt-ins without re-parsing raw mentions.
-- When a user is mentioned repeatedly, treat `displayName` updates differently: keep the original user metadata (username + nickname) in memory and use mention text only for the current turn, preventing the bot from assuming a mention is the user’s canonical name.
+## Media Intake & Normalization
+- Normalize all embeds (image, GIF, video, link previews) into a single `mediaQueue` shape with `type`, `url`, `mime`, `source`, `duration`, and `frameCount` so handlers do not branch on Discord embed flavors.
+- Expand the attachment/embeds parser to pull media URLs from message content, embed providers, and attachment metadata; de-duplicate by URL hash to avoid double analysis.
+- Add a lightweight media inspector that resolves headers (content-type, size, duration) before model selection; store results alongside the message for debugging.
 
-## System Prompt & Reasoning Guidance
-- Rewrite `prompts/system_prompt.txt` to describe the bot’s role (“helpful assistant, remembers high-level user traits, polite in DMs and guilds”) and include explicit instructions about how to combine stored memory with the latest user request.  
-- Add a short “context stack” section to the prompt that lists recent system facts (channel type, memory state, last poll result) so that Grok knows what to consider before generating a reply.
-- Inject guardrails into the prompt around responding to edits and new media: remind the model to ask clarifying questions if context is insufficient and to mention when it is relying on historical memory versus the current message.
+## Model Selection & Routing
+- Route any media-bearing message to a vision-capable or multi-modal model; if the primary model lacks vision, fall back to a multi-use model with a clear log tag.
+- Use a simple policy table (`image`, `gif`, `video`, `unknown`) to decide between single-frame extraction vs. multi-frame sampling, and pass the policy into the handler context.
+- If a message mixes text + media, include the text as a separate input segment and preserve ordering so the model sees the caption before the media.
 
-## Observability & User Feedback
-- Log contextual signals (`src/utils/helpers.js`) such as whether memory was enabled, which allowlist rule fired, or which model (text vs. vision) handled the request; expose these in a structured log so maintainers can audit why the bot “forgot” something.  
-- Surface simple “memory check” replies: after a sequence ends, emit a short summary (either in Discord or logs) of what the bot retained for that user so failures become easier to debug.  
-- Build a lightweight “context preview” command (e.g., `/context debug`) that prints the memory blobs the bot intends to reference; reuse the helpers that already format the SQLite rows.
+## GIF & Video Handling
+- For GIFs, sample representative frames (first, middle, last) and pass them as a multi-image bundle; include timing metadata when available.
+- For videos, extract a short storyboard (N frames across the duration) and include duration + timestamps; cap total frames to protect latency.
+- Add a small cache keyed by media URL to avoid reprocessing repeated GIFs/videos across the same channel/session.
+
+## Robustness & Fallbacks
+- If a media URL cannot be fetched or inspected, log the failure and ask the user to re-upload; do not silently drop the media.
+- When analysis exceeds time or size limits, switch to a summary workflow (single frame + user prompt) and note the limitation in the reply.
+- Validate embed payloads for missing URLs or unsupported content types; send a short user-facing error explaining what formats are supported.
+
+## Observability & Debugging
+- Log which media items were detected, which model handled them, and which extraction policy ran; add a `mediaTraceId` to correlate steps.
+- Provide a `/media debug` command that prints the normalized media list and routing decision for the last message.
+- Track media-related failures (fetch errors, decode errors, model mismatch) in a structured log to surface regressions quickly.
 
 ## Next Steps
-1. Audit `prompts/system_prompt.txt` and `src/memory.js` to document what state is currently saved and when it is cleared.  
-2. Add explicit metadata to memory writes (timestamps, channel type, display name) and update handlers to prefer those fields over new mention text.  
-3. Iterate on the system prompt with small tweaks (mentioning stored user traits, clarifying assumptions) and test via `/ask` plus slash commands to confirm the bot feels more “aware.”
+1. Add a `normalizeMediaFromMessage` helper in `src/utils` and wire it into message handling.
+2. Introduce a `selectMediaModel` policy in `src/handlers` that always picks a vision or multi-use model for embeds.
+3. Implement frame sampling utilities for GIFs/videos and log the chosen policy during `/ask` and mention flows.

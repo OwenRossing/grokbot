@@ -6,6 +6,9 @@ export const DISCORD_BULK_DELETE_LIMIT = 100;
 // Media limits
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 export const MAX_IMAGES = 4;
+export const MAX_MEDIA_INPUTS = 8;
+export const MAX_MEDIA_FRAMES_PER_ITEM = 3;
+export const MEDIA_CACHE_TTL_MS = 10 * 60 * 1000;
 
 // Regex patterns
 export const IMAGE_EXT = /\.(png|jpe?g|webp|gif)(\?.*)?$/i;

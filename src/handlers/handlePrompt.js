@@ -1,10 +1,11 @@
 import { checkRateLimit } from '../rateLimit.js';
 import { getUserSettings, isChannelAllowed, recordUserMessage, getProfileSummary, getRecentMessages, getRecentChannelMessages, getChannelSummary, getGuildSummary, getGuildUserNames, trackBotMessage, getServerContext, getUserContext } from '../memory.js';
-import { fetchImageAsDataUrl, resolveDirectMediaUrl } from '../services/media.js';
+import { fetchImageAsDataUrl, resolveDirectMediaUrl, processGifUrl, processVideoUrl } from '../services/media.js';
 import { getLLMResponse } from '../llm.js';
-import { MAX_IMAGES } from '../utils/constants.js';
-import { containsHateSpeech, getMessageImageUrls, getMessageVideoUrls } from '../utils/validators.js';
+import { MAX_MEDIA_INPUTS, MAX_MEDIA_FRAMES_PER_ITEM } from '../utils/constants.js';
+import { containsHateSpeech } from '../utils/validators.js';
 import { logContextSignal } from '../utils/helpers.js';
+import { summarizeMediaQueue } from '../utils/media.js';
 
 export async function handlePrompt({
   userId,
@@ -13,8 +14,7 @@ export async function handlePrompt({
   prompt,
   reply,
   replyContextText,
-  imageUrls,
-  videoUrls,
+  mediaItems = [],
   allowMemory,
   alreadyRecorded = false,
   onTyping,
@@ -25,7 +25,8 @@ export async function handlePrompt({
   inMemoryTurns,
   client,
 }) {
-  const rateKey = [prompt, replyContextText || '', ...(imageUrls || []), ...(videoUrls || [])].join('|');
+  const mediaUrlsForRate = (mediaItems || []).map((item) => item.url);
+  const rateKey = [prompt, replyContextText || '', ...mediaUrlsForRate].join('|');
   const rate = checkRateLimit(userId, rateKey);
   if (!rate.allow) {
     await reply(rate.message);
@@ -37,18 +38,28 @@ export async function handlePrompt({
     return;
   }
 
+  const mediaSummary = summarizeMediaQueue(mediaItems);
+  const mediaTraceId = mediaItems.length
+    ? `media-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    : '';
+
   let settings = getUserSettings(userId);
   if (settings.memory_enabled && allowMemory && !alreadyRecorded) {
     let memoryContent = prompt || '';
-    if (!memoryContent && imageUrls?.length) {
-      memoryContent = `User sent ${imageUrls.length} image(s).`;
-    } else if (imageUrls?.length) {
-      memoryContent = `${memoryContent} [shared ${imageUrls.length} image(s)]`;
+    if (!memoryContent && mediaSummary.imageCount) {
+      memoryContent = `User sent ${mediaSummary.imageCount} image(s).`;
+    } else if (mediaSummary.imageCount) {
+      memoryContent = `${memoryContent} [shared ${mediaSummary.imageCount} image(s)]`;
     }
-    if (!memoryContent && videoUrls?.length) {
-      memoryContent = `User sent ${videoUrls.length} video(s).`;
-    } else if (videoUrls?.length) {
-      memoryContent = `${memoryContent} [shared ${videoUrls.length} video(s)]`;
+    if (!memoryContent && mediaSummary.gifCount) {
+      memoryContent = `User sent ${mediaSummary.gifCount} gif(s).`;
+    } else if (mediaSummary.gifCount) {
+      memoryContent = `${memoryContent} [shared ${mediaSummary.gifCount} gif(s)]`;
+    }
+    if (!memoryContent && mediaSummary.videoCount) {
+      memoryContent = `User sent ${mediaSummary.videoCount} video(s).`;
+    } else if (mediaSummary.videoCount) {
+      memoryContent = `${memoryContent} [shared ${mediaSummary.videoCount} video(s)]`;
     }
     if (!memoryContent && replyContextText) {
       memoryContent = 'User replied to a message.';
@@ -81,8 +92,8 @@ export async function handlePrompt({
     memoryEnabled: Boolean(settings.memory_enabled),
     memoryAllowed: Boolean(allowMemory),
     replyContext: Boolean(replyContextText),
-    imageCount: imageUrls?.length || 0,
-    videoCount: videoUrls?.length || 0,
+    imageCount: mediaSummary.imageCount + mediaSummary.gifCount,
+    videoCount: mediaSummary.videoCount,
     displayName,
     preferredName: settings.preferred_name || '',
     pronouns: settings.pronouns || '',
@@ -98,17 +109,55 @@ export async function handlePrompt({
     replyContext: contextStack.replyContext,
     imageCount: contextStack.imageCount,
     videoCount: contextStack.videoCount,
-    modelHint: imageUrls?.length ? 'vision' : 'text',
+    modelHint: mediaItems.length ? 'vision' : 'text',
   });
+  if (mediaItems.length) {
+    logContextSignal('media_routing', {
+      mediaTraceId,
+      total: mediaSummary.total,
+      images: mediaSummary.imageCount,
+      gifs: mediaSummary.gifCount,
+      videos: mediaSummary.videoCount,
+    });
+  }
 
   const imageInputs = [];
-  if (imageUrls?.length) {
-    for (const url of imageUrls.slice(0, MAX_IMAGES)) {
-      const dataUrl = await fetchImageAsDataUrl(url, (u) => resolveDirectMediaUrl(u, process.env.GIPHY_API_KEY));
-      if (dataUrl) {
-        imageInputs.push(dataUrl);
-      } else {
-        console.warn('Image input dropped (failed to resolve):', url);
+  const mediaNotes = [];
+  if (mediaItems?.length) {
+    for (const item of mediaItems) {
+      if (imageInputs.length >= MAX_MEDIA_INPUTS) break;
+      if (item.type === 'image') {
+        const dataUrl = await fetchImageAsDataUrl(item.url, (u) => resolveDirectMediaUrl(u, process.env.GIPHY_API_KEY));
+        if (dataUrl) {
+          imageInputs.push(dataUrl);
+        } else {
+          mediaNotes.push(`Image: ${item.url}`);
+        }
+        continue;
+      }
+      if (item.type === 'gif') {
+        const frames = await processGifUrl(item.url);
+        if (frames?.length) {
+          const remaining = MAX_MEDIA_INPUTS - imageInputs.length;
+          imageInputs.push(...frames.slice(0, Math.min(remaining, MAX_MEDIA_FRAMES_PER_ITEM)));
+        } else {
+          const dataUrl = await fetchImageAsDataUrl(item.url, (u) => resolveDirectMediaUrl(u, process.env.GIPHY_API_KEY));
+          if (dataUrl) {
+            imageInputs.push(dataUrl);
+          } else {
+            mediaNotes.push(`GIF: ${item.url}`);
+          }
+        }
+        continue;
+      }
+      if (item.type === 'video') {
+        const frames = await processVideoUrl(item.url);
+        if (frames?.length) {
+          const remaining = MAX_MEDIA_INPUTS - imageInputs.length;
+          imageInputs.push(...frames.slice(0, Math.min(remaining, MAX_MEDIA_FRAMES_PER_ITEM)));
+        } else {
+          mediaNotes.push(`Video: ${item.url}`);
+        }
       }
     }
   }
@@ -120,17 +169,17 @@ export async function handlePrompt({
   let effectivePrompt = prompt;
   if (!effectivePrompt && imageInputs.length > 0) {
     effectivePrompt = 'User sent an image.';
-  } else if (!effectivePrompt && (videoUrls?.length || (replyContextText && replyContextText.includes('video')))) {
+  } else if (!effectivePrompt && mediaSummary.videoCount) {
     effectivePrompt = 'User referenced a video.';
   } else if (!effectivePrompt && replyContextText) {
     effectivePrompt = 'Following up on the replied message.';
   }
 
-  // Surface attached videos to the model even if they are not fetched as image inputs.
-  if (videoUrls?.length) {
-    const videoNote = `Attached video URLs:\n- ${videoUrls.slice(0, 3).join('\n- ')}`;
-    effectivePrompt = effectivePrompt ? `${effectivePrompt}\n${videoNote}` : videoNote;
-    console.info('Video URLs included in prompt:', videoUrls);
+  // Surface unresolved media URLs to the model.
+  if (mediaNotes.length) {
+    const noteBlock = `Media URLs:\n- ${mediaNotes.slice(0, 5).join('\n- ')}`;
+    effectivePrompt = effectivePrompt ? `${effectivePrompt}\n${noteBlock}` : noteBlock;
+    console.info('Media URLs included in prompt:', mediaNotes);
   }
   
   function addTurn(role, content) {
@@ -153,6 +202,7 @@ export async function handlePrompt({
     userContent: effectivePrompt,
     replyContext: replyContextText,
     imageInputs,
+    forceVision: mediaItems.length > 0,
     recentUserMessages,
     recentChannelMessages,
     channelSummary,

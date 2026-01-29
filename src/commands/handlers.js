@@ -114,7 +114,7 @@ export async function executeAskCommand(interaction, inMemoryTurns, client) {
     prompt: question,
     reply: replyFn,
     replyContextText: '',
-    imageUrls: [],
+    mediaItems: [],
     allowMemory: allowMemoryContext,
     alreadyRecorded: allowMemoryContext,
     onTyping: typingFn,
