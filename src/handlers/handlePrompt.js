@@ -170,6 +170,18 @@ export async function handlePrompt({
         await reply('Image provider is busy right now. Try again in a minute.');
         return;
       }
+      if (err?.code === 'INVALID_IMAGE_MODEL') {
+        await reply('Image model is invalid for generation. Set GROK_IMAGE_MODEL (recommended: grok-imagine-image).');
+        return;
+      }
+      if (err?.code === 'PROVIDER_AUTH') {
+        await reply('Image generation auth failed. Check GROK_API_KEY and provider permissions.');
+        return;
+      }
+      if (err?.code === 'BAD_IMAGE_REQUEST') {
+        await reply('Image request was rejected by provider. Try a simpler prompt or default size.');
+        return;
+      }
       await reply('Image generation failed. Please try again.');
       return;
     }

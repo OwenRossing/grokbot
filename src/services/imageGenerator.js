@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
-const IMAGE_MODEL = process.env.GROK_IMAGE_MODEL || process.env.GROK_MODEL || 'grok-2-image';
+const IMAGE_MODEL = process.env.GROK_IMAGE_MODEL || process.env.GROK_MODEL || 'grok-imagine-image';
 const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.IMAGE_GEN_TIMEOUT_MS || '45000', 10);
 const MAX_GLOBAL_CONCURRENCY = Number.parseInt(process.env.IMAGE_GEN_MAX_CONCURRENCY || '4', 10);
 const MAX_USER_CONCURRENCY = 1;
@@ -141,6 +141,7 @@ async function callProvider({ prompt, size, style }) {
     const text = await response.text();
     const err = new Error(`IMAGE_PROVIDER_ERROR:${response.status}:${text}`);
     err.httpStatus = response.status;
+    err.providerBody = text;
     throw err;
   }
 
@@ -194,6 +195,24 @@ export async function generateImage({ prompt, size = '1024x1024', style = '' , u
       const limitErr = new Error('Image provider is rate-limited right now. Try again in a minute.');
       limitErr.code = 'PROVIDER_RATE_LIMIT';
       throw limitErr;
+    }
+    if (lastErr?.httpStatus === 400) {
+      const body = String(lastErr?.providerBody || '');
+      const invalidModel =
+        /model|unknown|unsupported|not found|invalid/i.test(body) ||
+        /grok[-_a-z0-9]+/i.test(body);
+      const badReqErr = new Error(
+        invalidModel
+          ? `Image provider rejected the model. Set GROK_IMAGE_MODEL to a valid image model (for example: grok-imagine-image).`
+          : 'Image provider rejected the request. Check prompt/size/style parameters.'
+      );
+      badReqErr.code = invalidModel ? 'INVALID_IMAGE_MODEL' : 'BAD_IMAGE_REQUEST';
+      throw badReqErr;
+    }
+    if (lastErr?.httpStatus === 401 || lastErr?.httpStatus === 403) {
+      const authErr = new Error('Image provider authentication failed. Verify GROK_API_KEY permissions.');
+      authErr.code = 'PROVIDER_AUTH';
+      throw authErr;
     }
     const genericErr = new Error('Image generation failed due to provider error.');
     genericErr.code = 'PROVIDER_ERROR';

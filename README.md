@@ -41,7 +41,7 @@ Required vars:
 Optional:
 - `GROK_MODEL` (default: `grok-4-1-fast-reasoning-latest`)
 - `GROK_VISION_MODEL` (optional override used only when images are present)
-- `GROK_IMAGE_MODEL` (used for image generation requests)
+- `GROK_IMAGE_MODEL` (used for image generation requests, recommended: `grok-imagine-image`)
 - `BOT_NAME` (default: `GrokBuddy`)
 - `SUPER_ADMIN_USER_ID` (bypasses channel permission checks)
 - `GIPHY_API_KEY` (for `/gif` command)
