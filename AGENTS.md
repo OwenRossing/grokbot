@@ -1,32 +1,32 @@
-﻿# Repository Guidelines
+# Repository Guidelines
 
 ## Project Structure & Module Organization
-- Entry point is `src/index.js`; event wiring lives under `src/events`, command routing under `src/commands`, and helpers/utilities in `src/utils` (see `handlers/`, `services/`, and `utils/` subfolders for intent-specific logic).
-- Bot behaviors like polls, GIF lookups, and memory management are centralized in `src/handlers` and `src/services`, while shared constants and validators live in `src/utils`.
-- Configuration and prompts live at the repo root (`.env`, `.env.example`, and `prompts/system_prompt.txt`), and runtime state persists to `data.db` (SQLite via `better-sqlite3`).
-- No separate `tests/` directory yet; behavior verification happens through automated scripts (see below) and manual Discord flows.
+- Entry point is `src/index.js`; event wiring lives under `src/events`, command routing under `src/commands`, and helper logic in `src/handlers`, `src/services`, and `src/utils`.
+- Core behaviors (prompt handling, media/gif/video processing, intent routing, guild cache) are grouped by feature under `src/handlers` and `src/services`.
+- Configuration and prompt assets live at the root and `prompts/` (`.env`, `.env.example`, `prompts/system_prompt.txt`).
+- Runtime state is stored in SQLite at `data.db` (via `better-sqlite3`).
 
 ## Build, Test, and Development Commands
-- `npm install` – installs dependencies declared in `package.json` so the bot can compile and talk to Discord/Grok APIs.
-- `npm start` – runs `node src/index.js`, registers slash commands automatically, and begins listening for events; use this to exercise any feature (polls, `/ask`, `/gif`).
-- `node src/index.js` – equivalent to `npm start`; handy when you need to pass extra Node flags or debugging hooks.
+- `npm install` - install dependencies from `package.json`.
+- `npm start` - run the bot with `node src/index.js`, register slash commands, and start event listeners.
+- `node src/index.js` - direct start command when debugging with custom Node flags.
 
 ## Coding Style & Naming Conventions
-- Project uses ESM modules (`"type": "module"`), so prefer `import`/`export` over CommonJS and keep top-level `await` out of entry files.
-- Indent with two spaces, favor modern syntax (`const/let`, arrow functions, optional chaining) and single quotes for strings unless interpolation or template literals demand double quotes.
-- Handlers, services, and commands adopt `camelCase` function names; folder names mirror the feature (e.g., `handlePrompt`, `gifProcessor`) to keep routing predictable.
-- Keep configuration keyed to uppercase snake case in `.env` (e.g., `GROK_API_KEY`), then map those values into lowercase/`camelCase` config objects before exporting.
+- The project uses ESM (`"type": "module"`), so use `import`/`export` and avoid CommonJS patterns.
+- Use two-space indentation and prefer modern JavaScript (`const`/`let`, optional chaining, arrow functions).
+- Use single quotes unless template literals or escaping makes double quotes clearer.
+- Keep function and variable names `camelCase`; keep env var names `UPPER_SNAKE_CASE`.
 
 ## Testing Guidelines
-- There is no formal test suite; validate changes by running `npm start` and exercising command flows (slash commands, mentions, polls) in a Discord guild or DM.
-- Pay attention to console logs/errors during startup—missing env vars immediately halt the process—so confirm `DISCORD_TOKEN`, `GROK_BASE_URL`, and `GROK_API_KEY` exist before testing.
-- When adding new behavior, briefly document manual steps (commands used, expected output) either in PR description or a follow-up issue so reviewers can reproduce.
+- There is no formal test suite yet.
+- Validate changes by running `npm start` and exercising mention flows, `/ask`, polls, GIFs, and DM behavior in a test guild.
+- Watch startup logs for missing env vars (`DISCORD_TOKEN`, `GROK_BASE_URL`, `GROK_API_KEY`) and command registration issues.
 
 ## Commit & Pull Request Guidelines
-- Commit messages follow an imperative, descriptive style (e.g., `Add lobotomize command`, `Reapply GIF handling fixes`). Keep the subject line short (≤50 characters) and mention issues or feature tags when relevant.
-- PRs should contain a short summary of what changed, how you tested it (commands run, Discord interactions), and any updated configuration needs (new env vars or database migrations).
-- Attach screenshots/console snippets when UI logic or Discord messaging behavior changes in a visible way, and link related issues so automated tracking stays accurate.
+- Prefer short, imperative commit subjects (for example: `Add media normalization routing`).
+- Keep subjects concise (about 50 characters when possible) and scope each commit to one logical change.
+- PRs should include: what changed, how it was tested (commands + Discord flows), config changes, and screenshots/snippets for visible behavior updates.
 
 ## Security & Configuration Tips
-- Never commit `.env`; use `.env.example` as the template and copy it to `.env` with secrets filled locally before running the bot.
-- The bot enforces channel allowlists and per-user memory toggles; document any adjustments to those guards in `prompts/system_prompt.txt` so future contributors know why certain commands require permissions.
+- Never commit `.env`; use `.env.example` as the template.
+- Document permission or memory-policy changes in `prompts/system_prompt.txt` when behavior depends on policy.

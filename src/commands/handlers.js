@@ -25,6 +25,8 @@ import {
   trackBotMessage,
   getBotMessagesInChannel,
   deleteBotMessageRecord,
+  setImagePolicyOverride,
+  listImagePolicyOverrides,
 } from '../memory.js';
 import { checkRateLimit } from '../rateLimit.js';
 import { searchGiphyGif } from '../services/media.js';
@@ -32,6 +34,7 @@ import { handlePrompt } from '../handlers/handlePrompt.js';
 import { DISCORD_INTERACTION_EXPIRED_CODE, DISCORD_UNKNOWN_MESSAGE_CODE, DISCORD_BULK_DELETE_LIMIT, NUMBER_EMOJIS } from '../utils/constants.js';
 import { parseDuration, containsHateSpeech } from '../utils/validators.js';
 import { shouldRecordMemoryMessage } from '../utils/helpers.js';
+import { formatPolicySummary, getImagePolicy, parseImagePolicyValue } from '../services/imagePolicy.js';
 import {
   createPoll,
   recordVote,
@@ -39,6 +42,12 @@ import {
   tallyVotes,
   closePoll,
 } from '../polls.js';
+
+function normalizeReplyPayload(payload) {
+  if (typeof payload === 'string') return { content: payload };
+  if (!payload || typeof payload !== 'object') return { content: ' ' };
+  return payload;
+}
 
 export async function executeAskCommand(interaction, inMemoryTurns, client) {
   const question = interaction.options.getString('question', true);
@@ -60,14 +69,15 @@ export async function executeAskCommand(interaction, inMemoryTurns, client) {
   }
 
   const replyFn = async (text) => {
+    const payload = normalizeReplyPayload(text);
     try {
       let reply;
       if (interaction.deferred) {
-        reply = await interaction.editReply({ content: text });
+        reply = await interaction.editReply(payload);
       } else if (interaction.replied) {
-        reply = await interaction.followUp({ content: text, ephemeral: ghost });
+        reply = await interaction.followUp({ ...payload, ephemeral: ghost });
       } else {
-        reply = await interaction.reply({ content: text, ephemeral: ghost });
+        reply = await interaction.reply({ ...payload, ephemeral: ghost });
       }
       if (reply?.id && !ghost) {
         trackBotMessage(reply.id, interaction.channelId, interaction.guildId);
@@ -545,4 +555,52 @@ export async function executeContextCommand(interaction) {
     content = `${content.slice(0, 1850)}\n\n...(truncated)`;
   }
   await interaction.reply({ content: content || 'No context available.', ephemeral: true });
+}
+
+export async function executeImagePolicyCommand(interaction) {
+  const sub = interaction.options.getSubcommand();
+  if (sub === 'view') {
+    const policy = getImagePolicy({
+      guildId: interaction.guildId,
+      userId: interaction.user.id,
+    });
+    const guildOverrides = listImagePolicyOverrides('guild', interaction.guildId);
+    const lines = [
+      '**Effective image policy**',
+      formatPolicySummary(policy),
+      '',
+      `Guild overrides: ${guildOverrides.length || 0}`,
+    ];
+    await interaction.reply({ content: lines.join('\n'), ephemeral: true });
+    return;
+  }
+
+  if (sub === 'set') {
+    const key = interaction.options.getString('key', true);
+    const value = interaction.options.getString('value', true);
+    const parsed = parseImagePolicyValue(key, value);
+    if (parsed === null) {
+      await interaction.reply({ content: 'Invalid value for that key.', ephemeral: true });
+      return;
+    }
+    setImagePolicyOverride('guild', interaction.guildId, key, parsed);
+    await interaction.reply({ content: `Set \`${key}\` for this guild.`, ephemeral: true });
+    return;
+  }
+
+  if (sub === 'allow-user') {
+    const user = interaction.options.getUser('user', true);
+    setImagePolicyOverride('user', user.id, 'mode', 'allow');
+    await interaction.reply({ content: `Allowed image generation for ${user.username}.`, ephemeral: true });
+    return;
+  }
+
+  if (sub === 'deny-user') {
+    const user = interaction.options.getUser('user', true);
+    setImagePolicyOverride('user', user.id, 'mode', 'deny');
+    await interaction.reply({ content: `Denied image generation for ${user.username}.`, ephemeral: true });
+    return;
+  }
+
+  await interaction.reply({ content: 'Unknown image policy command.', ephemeral: true });
 }

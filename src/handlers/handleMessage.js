@@ -9,6 +9,12 @@ import { routeIntent } from '../services/intentRouter.js';
 import { mergeMediaQueues, normalizeMediaFromMessage } from '../utils/media.js';
 import { shouldRecordMemoryMessage, trackMetric } from '../utils/helpers.js';
 
+function normalizeReplyPayload(payload) {
+  if (typeof payload === 'string') return { content: payload };
+  if (!payload || typeof payload !== 'object') return { content: '' };
+  return payload;
+}
+
 export async function handleMessage({ client, message, inMemoryTurns }) {
   if (message.author.bot) return;
 
@@ -113,9 +119,10 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
   if (!content && !mediaItems.length && !replyContextText) return;
 
   const replyFn = async (text) => {
+    const payload = normalizeReplyPayload(text);
     const sent = isDirect 
-      ? await message.channel.send({ content: text })
-      : await message.reply({ content: text });
+      ? await message.channel.send(payload)
+      : await message.reply(payload);
     trackReplySync({ userMessageId: message.id, botReplyId: sent.id });
     trackBotMessage(sent.id, message.channelId, message.guildId);
   };
@@ -190,8 +197,9 @@ export async function handleMessageUpdate({ client, newMessage, inMemoryTurns })
   if (!replyId) return;
 
   const replyFn = async (text) => {
+    const payload = normalizeReplyPayload(text);
     const messageToEdit = await hydrated.channel.messages.fetch(replyId);
-    await messageToEdit.edit({ content: text });
+    await messageToEdit.edit(payload);
   };
   const typingFn = async () => {
     await hydrated.channel.sendTyping();

@@ -1,11 +1,15 @@
 import { checkRateLimit } from '../rateLimit.js';
-import { getUserSettings, queueUserMessage, getProfileSummary, getRecentMessages, getRecentChannelMessages, getChannelSummary, getGuildSummary, getGuildUserNames, trackBotMessage, getServerContext, getUserContext } from '../memory.js';
+import { getUserSettings, queueUserMessage, getProfileSummary, getRecentMessages, getRecentChannelMessages, getChannelSummary, getGuildSummary, getGuildUserNames, trackBotMessage, getServerContext, getUserContext, consumeImageQuota, logImageRequest } from '../memory.js';
 import { fetchImageAsDataUrl, resolveDirectMediaUrl, processGifUrl, processVideoUrl } from '../services/media.js';
 import { getLLMResponse } from '../llm.js';
 import { MAX_MEDIA_INPUTS, MAX_MEDIA_FRAMES_PER_ITEM } from '../utils/constants.js';
 import { containsHateSpeech } from '../utils/validators.js';
 import { logContextSignal, shouldRecordMemoryMessage, trackMetric } from '../utils/helpers.js';
 import { summarizeMediaQueue } from '../utils/media.js';
+import { isImageGenerationIntent } from '../services/intentRouter.js';
+import { evaluateImagePrompt, getImagePolicy } from '../services/imagePolicy.js';
+import { generateImage } from '../services/imageGenerator.js';
+import { createHash } from 'node:crypto';
 
 const lastChannelSummary = new Map();
 const lastChannelSummaryAt = new Map();
@@ -73,6 +77,103 @@ export async function handlePrompt({
   if (mediaSummary.imageCount) trackMetric('media.image', mediaSummary.imageCount);
   if (mediaSummary.gifCount) trackMetric('media.gif', mediaSummary.gifCount);
   if (mediaSummary.videoCount) trackMetric('media.video', mediaSummary.videoCount);
+
+  const imageIntent = isImageGenerationIntent(prompt);
+  if (imageIntent) {
+    trackMetric('image.request');
+    if (onTyping) {
+      await onTyping();
+    }
+
+    const policy = getImagePolicy({ guildId, userId });
+    const policyCheck = evaluateImagePrompt(prompt, policy, { guildId, userId });
+    const promptHash = createHash('sha256').update((prompt || '').trim().toLowerCase()).digest('hex');
+    if (!policyCheck.ok) {
+      trackMetric('image.blocked');
+      logImageRequest({
+        userId,
+        guildId,
+        promptHash,
+        status: 'blocked',
+        errorCode: policyCheck.code,
+      });
+      await reply(policyCheck.message);
+      return;
+    }
+
+    if (!policyCheck.bypassQuota) {
+      const quota = consumeImageQuota({
+        userId,
+        guildId,
+        userLimit: policy.userDailyLimit,
+        guildLimit: policy.guildDailyLimit,
+      });
+      if (!quota.ok) {
+        trackMetric('image.quota_hit');
+        logImageRequest({
+          userId,
+          guildId,
+          promptHash,
+          status: 'blocked',
+          errorCode: `quota_${quota.scope}`,
+        });
+        await reply(`Image quota reached for ${quota.scope}. Try again tomorrow (UTC).`);
+        return;
+      }
+    }
+
+    const size = process.env.IMAGE_GEN_DEFAULT_SIZE || '1024x1024';
+    const style = process.env.IMAGE_GEN_DEFAULT_STYLE || '';
+    try {
+      const generated = await generateImage({
+        prompt: (prompt || '').trim(),
+        size,
+        style,
+        userId,
+      });
+      trackMetric('image.success');
+      logImageRequest({
+        userId,
+        guildId,
+        promptHash,
+        status: 'success',
+        latencyMs: generated.latencyMs || 0,
+        providerRequestId: generated.providerRequestId || '',
+      });
+      const mimeType = generated.mimeType || 'image/png';
+      const ext = mimeType.includes('jpeg') ? 'jpg' : mimeType.includes('webp') ? 'webp' : 'png';
+      await reply({
+        content: `Generated image${generated.revisedPrompt ? `\n-# Revised prompt: ${generated.revisedPrompt.slice(0, 140)}` : ''}`,
+        files: [{ attachment: generated.buffer, name: `grokbot-${Date.now()}.${ext}` }],
+      });
+      return;
+    } catch (err) {
+      console.error('Image generation failed:', err);
+      trackMetric('image.error');
+      logImageRequest({
+        userId,
+        guildId,
+        promptHash,
+        status: 'error',
+        errorCode: err?.code || 'unknown',
+      });
+      if (err?.code === 'CIRCUIT_OPEN') {
+        await reply('Image generation is temporarily unavailable. Please try again shortly.');
+        return;
+      }
+      if (err?.code === 'TIMEOUT') {
+        trackMetric('image.timeout');
+        await reply('Image generation timed out. Please retry with a shorter prompt.');
+        return;
+      }
+      if (err?.code === 'PROVIDER_RATE_LIMIT') {
+        await reply('Image provider is busy right now. Try again in a minute.');
+        return;
+      }
+      await reply('Image generation failed. Please try again.');
+      return;
+    }
+  }
 
   let settings = getUserSettings(userId);
   if (settings.memory_enabled && allowMemory && !alreadyRecorded && shouldRecordMemoryMessage(prompt, mediaSummary.total > 0)) {

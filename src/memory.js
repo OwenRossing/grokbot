@@ -115,6 +115,35 @@ db.exec(`
     guild_id TEXT,
     created_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS image_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    guild_id TEXT,
+    prompt_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    latency_ms INTEGER DEFAULT 0,
+    error_code TEXT DEFAULT '',
+    provider_request_id TEXT DEFAULT '',
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS image_quota_usage (
+    scope_type TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    date_utc TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (scope_type, scope_id, date_utc)
+  );
+
+  CREATE TABLE IF NOT EXISTS image_policy_overrides (
+    scope_type TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (scope_type, scope_id, key)
+  );
 `);
 
 function isDuplicateColumnError(error) {
@@ -444,6 +473,30 @@ const getBotMessagesInChannelStmt = db.prepare(
 );
 const deleteBotMessageStmt = db.prepare(
   'DELETE FROM bot_messages WHERE message_id = ?'
+);
+const insertImageRequestStmt = db.prepare(
+  'INSERT INTO image_requests (user_id, guild_id, prompt_hash, status, latency_ms, error_code, provider_request_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+);
+const getQuotaUsageStmt = db.prepare(
+  'SELECT count FROM image_quota_usage WHERE scope_type = ? AND scope_id = ? AND date_utc = ?'
+);
+const upsertQuotaUsageStmt = db.prepare(
+  `INSERT INTO image_quota_usage (scope_type, scope_id, date_utc, count)
+   VALUES (?, ?, ?, ?)
+   ON CONFLICT(scope_type, scope_id, date_utc) DO UPDATE SET count = excluded.count`
+);
+const upsertImagePolicyOverrideStmt = db.prepare(
+  `INSERT INTO image_policy_overrides (scope_type, scope_id, key, value, updated_at)
+   VALUES (?, ?, ?, ?, ?)
+   ON CONFLICT(scope_type, scope_id, key) DO UPDATE SET
+     value = excluded.value,
+     updated_at = excluded.updated_at`
+);
+const deleteImagePolicyOverrideStmt = db.prepare(
+  'DELETE FROM image_policy_overrides WHERE scope_type = ? AND scope_id = ? AND key = ?'
+);
+const listImagePolicyOverridesStmt = db.prepare(
+  'SELECT scope_type, scope_id, key, value, updated_at FROM image_policy_overrides WHERE scope_type = ? AND scope_id = ? ORDER BY key ASC'
 );
 
 const upsertGuildRoleStmt = db.prepare(`
@@ -940,6 +993,67 @@ export function getBotMessagesInChannel(channelId, guildId, sinceTimestamp) {
  */
 export function deleteBotMessageRecord(messageId) {
   deleteBotMessageStmt.run(messageId);
+}
+
+export function logImageRequest({
+  userId,
+  guildId,
+  promptHash,
+  status,
+  latencyMs = 0,
+  errorCode = '',
+  providerRequestId = '',
+}) {
+  insertImageRequestStmt.run(
+    userId,
+    guildId || null,
+    promptHash,
+    status,
+    latencyMs,
+    errorCode,
+    providerRequestId,
+    Date.now()
+  );
+}
+
+function currentUtcDateKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+export const consumeImageQuota = db.transaction(({
+  userId,
+  guildId,
+  userLimit,
+  guildLimit,
+}) => {
+  const dateKey = currentUtcDateKey();
+  const userUsage = getQuotaUsageStmt.get('user', userId, dateKey)?.count || 0;
+  if (Number.isFinite(userLimit) && userLimit > 0 && userUsage >= userLimit) {
+    return { ok: false, scope: 'user', used: userUsage, limit: userLimit };
+  }
+
+  if (guildId) {
+    const guildUsage = getQuotaUsageStmt.get('guild', guildId, dateKey)?.count || 0;
+    if (Number.isFinite(guildLimit) && guildLimit > 0 && guildUsage >= guildLimit) {
+      return { ok: false, scope: 'guild', used: guildUsage, limit: guildLimit };
+    }
+    upsertQuotaUsageStmt.run('guild', guildId, dateKey, guildUsage + 1);
+  }
+
+  upsertQuotaUsageStmt.run('user', userId, dateKey, userUsage + 1);
+  return { ok: true, scope: null, used: userUsage + 1, limit: userLimit };
+});
+
+export function setImagePolicyOverride(scopeType, scopeId, key, value) {
+  if (value === null || value === undefined || value === '') {
+    deleteImagePolicyOverrideStmt.run(scopeType, scopeId, key);
+    return;
+  }
+  upsertImagePolicyOverrideStmt.run(scopeType, scopeId, key, String(value), Date.now());
+}
+
+export function listImagePolicyOverrides(scopeType, scopeId) {
+  return listImagePolicyOverridesStmt.all(scopeType, scopeId);
 }
 
 // ===== GUILD METADATA =====

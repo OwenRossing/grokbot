@@ -18,6 +18,17 @@ function normalize(str) {
     .replace(/[\u0300-\u036f]/g, '');
 }
 
+export function isImageGenerationIntent(prompt) {
+  const text = normalize(prompt);
+  if (!text) return false;
+  const patterns = [
+    /\b(generate|create|draw|render|make|design|illustrate)\b.*\b(image|picture|photo|art|wallpaper|logo|poster)\b/,
+    /\b(image|picture|photo|art|wallpaper|logo|poster)\b.*\b(of|for|with)\b/,
+    /^(imagine|midjourney|dalle|sdxl)\b/,
+  ];
+  return patterns.some((re) => re.test(text));
+}
+
 /**
  * Simple fuzzy score: count matching characters in order, case-insensitive
  */

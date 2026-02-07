@@ -2,6 +2,10 @@
 
 A production-ready Discord bot built with **discord.js v14** and Grok (OpenAI-compatible) chat completions. It supports mentions, slash commands, DMs, per-user memory, and strong anti-abuse controls.
 
+## Documentation
+- `docs/PROJECT_DOCUMENTATION.md` - architecture, data model, and feature map.
+- `docs/OPERATIONS.md` - deployment checklist, production controls, and incident handling.
+
 ## Features
 - Mention-based responses using `@BotName` (replies with visible references).
 - `/ask` slash command for the same behavior.
@@ -11,6 +15,7 @@ A production-ready Discord bot built with **discord.js v14** and Grok (OpenAI-co
 - Per-user cooldown and duplicate spam guard.
 - Message edit handling with re-runs (60s window, throttled).
 - Image support (attachments, embeds, and image URLs) with vision model routing.
+- Image generation via natural `/ask`/mention prompts (admin-policy + quotas).
 - Polls via reactions with auto-close and results.
 - Giphy GIF search with `/gif`.
 - Admin command to purge bot messages from channels with flexible timeframes.
@@ -36,9 +41,15 @@ Required vars:
 Optional:
 - `GROK_MODEL` (default: `grok-4-1-fast-reasoning-latest`)
 - `GROK_VISION_MODEL` (optional override used only when images are present)
+- `GROK_IMAGE_MODEL` (used for image generation requests)
 - `BOT_NAME` (default: `GrokBuddy`)
 - `SUPER_ADMIN_USER_ID` (bypasses channel permission checks)
 - `GIPHY_API_KEY` (for `/gif` command)
+- `IMAGE_GEN_TIMEOUT_MS` (default: `45000`)
+- `IMAGE_GEN_DEFAULT_SIZE` (default: `1024x1024`)
+- `IMAGE_GEN_DAILY_USER_LIMIT` (default: `20`)
+- `IMAGE_GEN_DAILY_GUILD_LIMIT` (default: `500`)
+- `IMAGE_GEN_MAX_PROMPT_CHARS` (default: `1200`)
 
 **AI Intelligence Enhancement Parameters:**
 - `LLM_TEMPERATURE` (default: `0.3`) - Controls randomness (0.0-2.0). Lower = more focused, Higher = more creative
@@ -74,6 +85,7 @@ Replying to another message with an image also works:
 /ask question: whats good ghost:true    (visible only to you - default)
 /poll question:"Best lunch?" options:"Pizza|Tacos|Sushi" duration:2h
 /gif query:"vibes"
+/image-policy view
 ```
 
 The `ghost` parameter controls message visibility:
@@ -116,6 +128,11 @@ DMs are allowed for memory writes when the user has memory enabled.
 
 ### GIFs
 - Search Giphy with `/gif query:"cats"` (requires `GIPHY_API_KEY`)
+
+### Image generation
+- Ask naturally in mentions/DMs or `/ask` (e.g., `generate a watercolor fox in snow`).
+- Admins can tune restrictions/quotas with `/image-policy` subcommands.
+- Generated images are posted as Discord attachments (not transient provider URLs).
 
 ### Videos
 - Reply to a video with `@BotName` or use `/ask` while replying; the bot will acknowledge video context. Advanced transcription is not enabled by default.

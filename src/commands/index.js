@@ -217,6 +217,58 @@ export const contextCommand = {
     ),
 };
 
+export const imagePolicyCommand = {
+  data: new SlashCommandBuilder()
+    .setName('image-policy')
+    .setDescription('Manage image generation policy')
+    .setDefaultMemberPermissions(16)
+    .addSubcommand((sub) =>
+      sub
+        .setName('view')
+        .setDescription('View effective image policy for this server')
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('set')
+        .setDescription('Set a policy key for this server')
+        .addStringOption((option) =>
+          option
+            .setName('key')
+            .setDescription('Policy key')
+            .setRequired(true)
+            .addChoices(
+              { name: 'enabled', value: 'enabled' },
+              { name: 'max_prompt_chars', value: 'max_prompt_chars' },
+              { name: 'user_daily_limit', value: 'user_daily_limit' },
+              { name: 'guild_daily_limit', value: 'guild_daily_limit' },
+              { name: 'blocked_terms', value: 'blocked_terms' }
+            )
+        )
+        .addStringOption((option) =>
+          option
+            .setName('value')
+            .setDescription('Policy value (comma-separated for blocked_terms)')
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('allow-user')
+        .setDescription('Allow a user to bypass image policy denies/quotas')
+        .addUserOption((option) =>
+          option.setName('user').setDescription('User to allow').setRequired(true)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('deny-user')
+        .setDescription('Deny a user from using image generation')
+        .addUserOption((option) =>
+          option.setName('user').setDescription('User to deny').setRequired(true)
+        )
+    ),
+};
+
 export const commands = [
   askCommand,
   pollCommand,
@@ -234,4 +286,5 @@ export const commands = [
   myDataCommand,
   autoreplyCommand,
   contextCommand,
+  imagePolicyCommand,
 ];

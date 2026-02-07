@@ -16,6 +16,7 @@ import {
   executeMyDataCommand,
   executeAutoreplyCommand,
   executeContextCommand,
+  executeImagePolicyCommand,
 } from '../commands/handlers.js';
 import { trackMetric } from '../utils/helpers.js';
 
@@ -32,7 +33,7 @@ export async function handleInteraction(interaction, { inMemoryTurns, pollTimers
   const guildOnlyCommands = [
     'memory-allow', 'memory-deny', 'memory-list',
     'memory-reset-guild', 'memory-reset-channel', 'memory-reset-user',
-    'purge', 'serverinfo'
+    'purge', 'serverinfo', 'image-policy'
   ];
 
   if (guildOnlyCommands.includes(commandName)) {
@@ -80,6 +81,8 @@ export async function handleInteraction(interaction, { inMemoryTurns, pollTimers
         return await executeAutoreplyCommand(interaction);
       case 'context':
         return await executeContextCommand(interaction);
+      case 'image-policy':
+        return await executeImagePolicyCommand(interaction);
       default:
         await interaction.reply({ content: 'Unknown command.', ephemeral: true });
     }
