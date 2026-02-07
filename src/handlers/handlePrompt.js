@@ -144,8 +144,12 @@ export async function handlePrompt({
       });
       const mimeType = generated.mimeType || 'image/png';
       const ext = mimeType.includes('jpeg') ? 'jpg' : mimeType.includes('webp') ? 'webp' : 'png';
+      const revisedPrompt = (generated.revisedPrompt || '').trim();
+      const revisedSuffix = revisedPrompt
+        ? `\n-# Revised prompt: ${revisedPrompt.slice(0, 1200)}`
+        : '';
       await reply({
-        content: `Generated image${generated.revisedPrompt ? `\n-# Revised prompt: ${generated.revisedPrompt.slice(0, 140)}` : ''}`,
+        content: `Generated image${revisedSuffix}`,
         files: [{ attachment: generated.buffer, name: `grokbot-${Date.now()}.${ext}` }],
       });
       return;

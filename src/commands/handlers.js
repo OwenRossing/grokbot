@@ -35,6 +35,7 @@ import { DISCORD_INTERACTION_EXPIRED_CODE, DISCORD_UNKNOWN_MESSAGE_CODE, DISCORD
 import { parseDuration, containsHateSpeech } from '../utils/validators.js';
 import { shouldRecordMemoryMessage } from '../utils/helpers.js';
 import { formatPolicySummary, getImagePolicy, parseImagePolicyValue } from '../services/imagePolicy.js';
+import { getRecentReactionContext } from '../services/reactionContext.js';
 import {
   createPoll,
   recordVote,
@@ -49,9 +50,28 @@ function normalizeReplyPayload(payload) {
   return payload;
 }
 
+function wantsReactionMedia(text) {
+  if (!text) return false;
+  return /(remix|variation|recreate|restyle|edit this|use this image|use that image|based on (this|that))/i.test(text);
+}
+
 export async function executeAskCommand(interaction, inMemoryTurns, client) {
   const question = interaction.options.getString('question', true);
   const ghost = interaction.options.getBoolean('ghost') ?? true;
+  let replyContextText = '';
+  let mediaItems = [];
+  if (wantsReactionMedia(question)) {
+    const reactionContext = await getRecentReactionContext({
+      client,
+      userId: interaction.user.id,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+    });
+    if (reactionContext?.media?.length) {
+      mediaItems = reactionContext.media;
+      replyContextText = `Reacted context from ${reactionContext.author}: ${reactionContext.text || '[no text]'} [media attached]`;
+    }
+  }
   const settings = getUserSettings(interaction.user.id);
   const memoryChannel = interaction.channel?.isDMBased?.()
     ? true
@@ -125,8 +145,8 @@ export async function executeAskCommand(interaction, inMemoryTurns, client) {
     channelId: interaction.channelId,
     prompt: question,
     reply: replyFn,
-    replyContextText: '',
-    mediaItems: [],
+    replyContextText,
+    mediaItems,
     allowMemory: allowMemoryContext,
     alreadyRecorded: didRecord,
     onTyping: typingFn,
@@ -227,6 +247,20 @@ export async function executeImagineCommand(interaction, inMemoryTurns, client) 
   const styleRaw = interaction.options.getString('style') || 'default';
   const style = styleRaw === 'default' ? '' : styleRaw;
   const ghost = interaction.options.getBoolean('ghost') ?? true;
+  let replyContextText = '';
+  let mediaItems = [];
+  if (wantsReactionMedia(prompt)) {
+    const reactionContext = await getRecentReactionContext({
+      client,
+      userId: interaction.user.id,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+    });
+    if (reactionContext?.media?.length) {
+      mediaItems = reactionContext.media;
+      replyContextText = `Reacted context from ${reactionContext.author}: ${reactionContext.text || '[no text]'} [media attached]`;
+    }
+  }
 
   if (mode === 'video') {
     await interaction.reply({
@@ -322,8 +356,8 @@ export async function executeImagineCommand(interaction, inMemoryTurns, client) 
     channelId: interaction.channelId,
     prompt,
     reply: replyFn,
-    replyContextText: '',
-    mediaItems: [],
+    replyContextText,
+    mediaItems,
     allowMemory: allowMemoryContext,
     alreadyRecorded: didRecord,
     onTyping: typingFn,

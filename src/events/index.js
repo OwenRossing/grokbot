@@ -16,6 +16,8 @@ import { listOpenPolls, closePoll, getPollByMessageId, tallyVotes } from '../pol
 import { NUMBER_EMOJIS } from '../utils/constants.js';
 import { REST, Routes } from 'discord.js';
 import { commands } from '../commands/index.js';
+import { normalizeMediaFromMessage } from '../utils/media.js';
+import { setRecentReactionTarget } from '../services/reactionContext.js';
 
 export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
   // ===== MESSAGE EVENTS =====
@@ -38,6 +40,15 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
         if (user.bot) return;
         if (reaction.partial) await reaction.fetch();
         const message = reaction.message.partial ? await reaction.message.fetch() : reaction.message;
+        const reactedMedia = normalizeMediaFromMessage(message);
+        if (reactedMedia.length > 0) {
+          setRecentReactionTarget({
+            userId: user.id,
+            guildId: message.guildId,
+            channelId: message.channelId,
+            messageId: message.id,
+          });
+        }
         const emoji = reaction.emoji.name;
         const optionIndex = NUMBER_EMOJIS.indexOf(emoji);
         if (optionIndex === -1) return;

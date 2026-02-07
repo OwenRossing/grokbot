@@ -135,6 +135,7 @@ DMs are allowed for memory writes when the user has memory enabled.
 - Ask naturally in mentions/DMs or `/ask` (e.g., `generate a watercolor fox in snow`).
 - Use `/imagine` for explicit controls (mode, resolution, style, ghost response).
 - `mode:video` is reserved for future use and currently disabled.
+- For remix-style prompts, react to an image first, then ask for a remix in the same channel.
 - Admins can tune restrictions/quotas with `/image-policy` subcommands.
 - Generated images are posted as Discord attachments (not transient provider URLs).
 
