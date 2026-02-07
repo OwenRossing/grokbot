@@ -220,6 +220,124 @@ export async function executeGifCommand(interaction) {
   await interaction.editReply({ content: 'Posted your GIF!' });
 }
 
+export async function executeImagineCommand(interaction, inMemoryTurns, client) {
+  const mode = interaction.options.getString('mode', true);
+  const prompt = interaction.options.getString('prompt', true);
+  const resolution = interaction.options.getString('resolution') || '1024x1024';
+  const styleRaw = interaction.options.getString('style') || 'default';
+  const style = styleRaw === 'default' ? '' : styleRaw;
+  const ghost = interaction.options.getBoolean('ghost') ?? true;
+
+  if (mode === 'video') {
+    await interaction.reply({
+      content: 'Video generation is not enabled yet. Use `mode:image` for now.',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (containsHateSpeech(prompt)) {
+    await interaction.reply({ content: 'nah, not touching that.', ephemeral: true });
+    return;
+  }
+
+  const settings = getUserSettings(interaction.user.id);
+  const memoryChannel = interaction.channel?.isDMBased?.()
+    ? true
+    : isChannelAllowed(interaction.channelId);
+  const allowMemoryContext = memoryChannel && settings.memory_enabled;
+  const displayName =
+    interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
+  const username = interaction.user.username;
+  const globalName = interaction.user.globalName || '';
+  const channelType = interaction.channel?.isDMBased?.() ? 'dm' : 'guild';
+
+  const replyFn = async (text) => {
+    const payload = normalizeReplyPayload(text);
+    try {
+      let reply;
+      if (interaction.deferred) {
+        reply = await interaction.editReply(payload);
+      } else if (interaction.replied) {
+        reply = await interaction.followUp({ ...payload, ephemeral: ghost });
+      } else {
+        reply = await interaction.reply({ ...payload, ephemeral: ghost });
+      }
+      if (reply?.id && !ghost) {
+        trackBotMessage(reply.id, interaction.channelId, interaction.guildId);
+      }
+    } catch (err) {
+      if (err?.code === 50013 && payload?.files?.length) {
+        const fallback = {
+          content: 'I need the `Attach Files` permission in this channel to send generated images.',
+        };
+        if (interaction.deferred) {
+          await interaction.editReply(fallback);
+        } else if (interaction.replied) {
+          await interaction.followUp({ ...fallback, ephemeral: ghost });
+        } else {
+          await interaction.reply({ ...fallback, ephemeral: ghost });
+        }
+        return;
+      }
+      if (err.code === DISCORD_INTERACTION_EXPIRED_CODE) {
+        console.error('Failed to send reply: Interaction expired before response could be sent');
+      } else {
+        throw err;
+      }
+    }
+  };
+
+  const typingFn = async () => {
+    try {
+      if (!interaction.deferred && !interaction.replied) {
+        await interaction.deferReply({ ephemeral: ghost });
+      }
+    } catch (err) {
+      if (err.code === DISCORD_INTERACTION_EXPIRED_CODE) {
+        console.error('Failed to defer reply: Interaction expired before deferReply could be called');
+      } else {
+        throw err;
+      }
+    }
+  };
+
+  const didRecord = allowMemoryContext && shouldRecordMemoryMessage(prompt, false);
+  if (didRecord) {
+    queueUserMessage({
+      userId: interaction.user.id,
+      channelId: interaction.channelId,
+      guildId: interaction.guildId,
+      content: prompt,
+      displayName,
+      username,
+      globalName,
+      channelType,
+    });
+  }
+
+  await handlePrompt({
+    userId: interaction.user.id,
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    prompt,
+    reply: replyFn,
+    replyContextText: '',
+    mediaItems: [],
+    allowMemory: allowMemoryContext,
+    alreadyRecorded: didRecord,
+    onTyping: typingFn,
+    displayName,
+    userName: username,
+    userGlobalName: globalName,
+    channelType,
+    inMemoryTurns,
+    client,
+    forceImageGeneration: true,
+    imageOptions: { size: resolution, style },
+  });
+}
+
 export async function executeMemoryCommand(interaction) {
   const sub = interaction.options.getSubcommand();
   if (sub === 'on') {

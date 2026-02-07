@@ -3,6 +3,7 @@ import {
   executeAskCommand,
   executePollCommand,
   executeGifCommand,
+  executeImagineCommand,
   executeMemoryCommand,
   executeLobotomizeCommand,
   executeMemoryAllowCommand,
@@ -55,6 +56,8 @@ export async function handleInteraction(interaction, { inMemoryTurns, pollTimers
         return await executePollCommand(interaction, pollTimers);
       case 'gif':
         return await executeGifCommand(interaction);
+      case 'imagine':
+        return await executeImagineCommand(interaction, inMemoryTurns, client);
       case 'memory':
         return await executeMemoryCommand(interaction);
       case 'memory-allow':

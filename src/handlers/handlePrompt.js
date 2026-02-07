@@ -56,6 +56,8 @@ export async function handlePrompt({
   channelType,
   inMemoryTurns,
   client,
+  forceImageGeneration = false,
+  imageOptions = null,
 }) {
   const mediaUrlsForRate = (mediaItems || []).map((item) => item.url);
   const rateKey = [prompt, replyContextText || '', ...mediaUrlsForRate].join('|');
@@ -78,7 +80,7 @@ export async function handlePrompt({
   if (mediaSummary.gifCount) trackMetric('media.gif', mediaSummary.gifCount);
   if (mediaSummary.videoCount) trackMetric('media.video', mediaSummary.videoCount);
 
-  const imageIntent = isImageGenerationIntent(prompt);
+  const imageIntent = forceImageGeneration || isImageGenerationIntent(prompt);
   if (imageIntent) {
     trackMetric('image.request');
     if (onTyping) {
@@ -122,8 +124,8 @@ export async function handlePrompt({
       }
     }
 
-    const size = process.env.IMAGE_GEN_DEFAULT_SIZE || '1024x1024';
-    const style = process.env.IMAGE_GEN_DEFAULT_STYLE || '';
+    const size = imageOptions?.size || process.env.IMAGE_GEN_DEFAULT_SIZE || '1024x1024';
+    const style = imageOptions?.style || process.env.IMAGE_GEN_DEFAULT_STYLE || '';
     try {
       const generated = await generateImage({
         prompt: (prompt || '').trim(),
@@ -149,6 +151,10 @@ export async function handlePrompt({
       return;
     } catch (err) {
       console.error('Image generation failed:', err);
+      if (err?.code === 50013) {
+        await reply('I need the `Attach Files` permission in this channel to send generated images.');
+        return;
+      }
       trackMetric('image.error');
       logImageRequest({
         userId,

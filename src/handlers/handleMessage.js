@@ -120,9 +120,21 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
 
   const replyFn = async (text) => {
     const payload = normalizeReplyPayload(text);
-    const sent = isDirect 
-      ? await message.channel.send(payload)
-      : await message.reply(payload);
+    let sent;
+    try {
+      sent = isDirect
+        ? await message.channel.send(payload)
+        : await message.reply(payload);
+    } catch (err) {
+      if (err?.code === 50013 && payload?.files?.length) {
+        const fallback = { content: 'I need the `Attach Files` permission in this channel to send generated images.' };
+        sent = isDirect
+          ? await message.channel.send(fallback)
+          : await message.reply(fallback);
+      } else {
+        throw err;
+      }
+    }
     trackReplySync({ userMessageId: message.id, botReplyId: sent.id });
     trackBotMessage(sent.id, message.channelId, message.guildId);
   };
@@ -199,7 +211,15 @@ export async function handleMessageUpdate({ client, newMessage, inMemoryTurns })
   const replyFn = async (text) => {
     const payload = normalizeReplyPayload(text);
     const messageToEdit = await hydrated.channel.messages.fetch(replyId);
-    await messageToEdit.edit(payload);
+    try {
+      await messageToEdit.edit(payload);
+    } catch (err) {
+      if (err?.code === 50013 && payload?.files?.length) {
+        await messageToEdit.edit({ content: 'I need the `Attach Files` permission in this channel to send generated images.' });
+      } else {
+        throw err;
+      }
+    }
   };
   const typingFn = async () => {
     await hydrated.channel.sendTyping();

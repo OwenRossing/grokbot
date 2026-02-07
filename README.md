@@ -9,6 +9,7 @@ A production-ready Discord bot built with **discord.js v14** and Grok (OpenAI-co
 ## Features
 - Mention-based responses using `@BotName` (replies with visible references).
 - `/ask` slash command for the same behavior.
+- `/imagine` slash command for explicit image generation controls.
 - DM support (no mention required).
 - Per-user memory with opt-in/out controls.
 - Channel allowlist for memory writes in guilds.
@@ -83,6 +84,7 @@ Replying to another message with an image also works:
 /ask question: whats good
 /ask question: whats good ghost:false   (visible to everyone)
 /ask question: whats good ghost:true    (visible only to you - default)
+/imagine mode:image prompt:"cinematic mountain sunrise" resolution:1024x1024 style:vivid
 /poll question:"Best lunch?" options:"Pizza|Tacos|Sushi" duration:2h
 /gif query:"vibes"
 /image-policy view
@@ -131,6 +133,8 @@ DMs are allowed for memory writes when the user has memory enabled.
 
 ### Image generation
 - Ask naturally in mentions/DMs or `/ask` (e.g., `generate a watercolor fox in snow`).
+- Use `/imagine` for explicit controls (mode, resolution, style, ghost response).
+- `mode:video` is reserved for future use and currently disabled.
 - Admins can tune restrictions/quotas with `/image-policy` subcommands.
 - Generated images are posted as Discord attachments (not transient provider URLs).
 

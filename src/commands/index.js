@@ -217,6 +217,59 @@ export const contextCommand = {
     ),
 };
 
+export const imagineCommand = {
+  data: new SlashCommandBuilder()
+    .setName('imagine')
+    .setDescription('Generate an image (video mode reserved for future use)')
+    .setDMPermission(true)
+    .addStringOption((option) =>
+      option
+        .setName('mode')
+        .setDescription('Generation mode')
+        .setRequired(true)
+        .addChoices(
+          { name: 'Image', value: 'image' },
+          { name: 'Video (disabled)', value: 'video' }
+        )
+    )
+    .addStringOption((option) =>
+      option
+        .setName('prompt')
+        .setDescription('Describe what to generate')
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('resolution')
+        .setDescription('Output resolution preset')
+        .setRequired(false)
+        .addChoices(
+          { name: '512x512', value: '512x512' },
+          { name: '768x768', value: '768x768' },
+          { name: '1024x1024 (default)', value: '1024x1024' },
+          { name: '1024x1536 (portrait)', value: '1024x1536' },
+          { name: '1536x1024 (landscape)', value: '1536x1024' }
+        )
+    )
+    .addStringOption((option) =>
+      option
+        .setName('style')
+        .setDescription('Style hint')
+        .setRequired(false)
+        .addChoices(
+          { name: 'Default', value: 'default' },
+          { name: 'Vivid', value: 'vivid' },
+          { name: 'Natural', value: 'natural' }
+        )
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName('ghost')
+        .setDescription('Make the response visible only to you (ghost message)')
+        .setRequired(false)
+    ),
+};
+
 export const imagePolicyCommand = {
   data: new SlashCommandBuilder()
     .setName('image-policy')
@@ -273,6 +326,7 @@ export const commands = [
   askCommand,
   pollCommand,
   gifCommand,
+  imagineCommand,
   memoryCommand,
   memoryAllowCommand,
   memoryDenyCommand,
