@@ -123,15 +123,35 @@ async function downloadImage(url) {
   };
 }
 
+function mapSizeToAspectRatio(size) {
+  const value = String(size || '').trim();
+  if (!value) return '';
+  const known = {
+    '1024x1024': '1:1',
+    '1024x1792': '9:16',
+    '1792x1024': '16:9',
+    '1536x1024': '3:2',
+    '1024x1536': '2:3',
+  };
+  if (known[value]) return known[value];
+  const match = value.match(/^(\d+)\s*x\s*(\d+)$/i);
+  if (!match) return '';
+  const w = Number.parseInt(match[1], 10);
+  const h = Number.parseInt(match[2], 10);
+  if (!w || !h) return '';
+  return `${w}:${h}`;
+}
+
 async function callProvider({ prompt, size, style }) {
   const baseUrl = normalizeBaseUrl(process.env.GROK_BASE_URL);
+  const aspectRatio = mapSizeToAspectRatio(size);
   const body = {
     model: IMAGE_MODEL,
     prompt,
-    size,
     n: 1,
     response_format: 'b64_json',
   };
+  if (aspectRatio) body.aspect_ratio = aspectRatio;
   if (style) body.style = style;
 
   const response = await fetchWithTimeout(`${baseUrl}/v1/images/generations`, {
@@ -210,7 +230,7 @@ export async function generateImage({ prompt, size = '1024x1024', style = '' , u
       const badReqErr = new Error(
         invalidModel
           ? `Image provider rejected the model. Set GROK_IMAGE_MODEL to a valid image model (for example: grok-imagine-image).`
-          : 'Image provider rejected the request. Check prompt/size/style parameters.'
+          : `Image provider rejected the request. ${clipped(body) || 'Check prompt/aspect-ratio/style parameters.'}`
       );
       badReqErr.code = invalidModel ? 'INVALID_IMAGE_MODEL' : 'BAD_IMAGE_REQUEST';
       throw badReqErr;

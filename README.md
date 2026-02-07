@@ -46,7 +46,7 @@ Optional:
 - `SUPER_ADMIN_USER_ID` (bypasses channel permission checks)
 - `GIPHY_API_KEY` (for `/gif` command)
 - `IMAGE_GEN_TIMEOUT_MS` (default: `45000`)
-- `IMAGE_GEN_DEFAULT_SIZE` (default: `1024x1024`)
+- `IMAGE_GEN_DEFAULT_SIZE` (default: `1024x1024`, mapped internally to aspect ratio for xAI imagine API)
 - `IMAGE_GEN_DAILY_USER_LIMIT` (default: `20`)
 - `IMAGE_GEN_DAILY_GUILD_LIMIT` (default: `500`)
 - `IMAGE_GEN_MAX_PROMPT_CHARS` (default: `1200`)
