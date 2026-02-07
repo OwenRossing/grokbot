@@ -170,6 +170,14 @@ export async function handlePrompt({
         await reply('Image provider is busy right now. Try again in a minute.');
         return;
       }
+      if (err?.code === 'PROVIDER_NOT_FOUND') {
+        await reply('Image model or endpoint not found. Verify GROK_IMAGE_MODEL and GROK_BASE_URL.');
+        return;
+      }
+      if (err?.code === 'PROVIDER_UPSTREAM') {
+        await reply('Image provider had an upstream error. Please retry shortly.');
+        return;
+      }
       if (err?.code === 'INVALID_IMAGE_MODEL') {
         await reply('Image model is invalid for generation. Set GROK_IMAGE_MODEL (recommended: grok-imagine-image).');
         return;

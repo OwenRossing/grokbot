@@ -104,6 +104,12 @@ function parseImageResponse(data) {
   return null;
 }
 
+function clipped(text, max = 320) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  if (value.length <= max) return value;
+  return `${value.slice(0, max)}...`;
+}
+
 async function downloadImage(url) {
   const res = await fetchWithTimeout(url, { method: 'GET' }, REQUEST_TIMEOUT_MS);
   if (!res.ok) {
@@ -214,7 +220,33 @@ export async function generateImage({ prompt, size = '1024x1024', style = '' , u
       authErr.code = 'PROVIDER_AUTH';
       throw authErr;
     }
-    const genericErr = new Error('Image generation failed due to provider error.');
+    if (lastErr?.httpStatus === 404) {
+      const body = clipped(lastErr?.providerBody || '');
+      const notFoundErr = new Error(
+        body
+          ? `Image endpoint/model not found (404): ${body}`
+          : 'Image endpoint/model not found (404).'
+      );
+      notFoundErr.code = 'PROVIDER_NOT_FOUND';
+      throw notFoundErr;
+    }
+    if (lastErr?.httpStatus >= 500) {
+      const body = clipped(lastErr?.providerBody || '');
+      const upstreamErr = new Error(
+        body
+          ? `Image provider upstream error (${lastErr.httpStatus}): ${body}`
+          : `Image provider upstream error (${lastErr.httpStatus}).`
+      );
+      upstreamErr.code = 'PROVIDER_UPSTREAM';
+      throw upstreamErr;
+    }
+    const status = lastErr?.httpStatus ? ` (${lastErr.httpStatus})` : '';
+    const body = clipped(lastErr?.providerBody || '');
+    const genericErr = new Error(
+      body
+        ? `Image generation failed due to provider error${status}: ${body}`
+        : `Image generation failed due to provider error${status}.`
+    );
     genericErr.code = 'PROVIDER_ERROR';
     throw genericErr;
   };
