@@ -2,21 +2,15 @@
 
 A production-ready Discord bot built with **discord.js v14** and Grok (OpenAI-compatible) chat completions. It supports mentions, slash commands, DMs, per-user memory, and strong anti-abuse controls.
 
-## Documentation
-- `docs/PROJECT_DOCUMENTATION.md` - architecture, data model, and feature map.
-- `docs/OPERATIONS.md` - deployment checklist, production controls, and incident handling.
-
 ## Features
 - Mention-based responses using `@BotName` (replies with visible references).
 - `/ask` slash command for the same behavior.
-- `/imagine` slash command for explicit image generation controls.
 - DM support (no mention required).
 - Per-user memory with opt-in/out controls.
 - Channel allowlist for memory writes in guilds.
 - Per-user cooldown and duplicate spam guard.
 - Message edit handling with re-runs (60s window, throttled).
 - Image support (attachments, embeds, and image URLs) with vision model routing.
-- Image generation via natural `/ask`/mention prompts (admin-policy + quotas).
 - Polls via reactions with auto-close and results.
 - Giphy GIF search with `/gif`.
 - Admin command to purge bot messages from channels with flexible timeframes.
@@ -42,15 +36,17 @@ Required vars:
 Optional:
 - `GROK_MODEL` (default: `grok-4-1-fast-reasoning-latest`)
 - `GROK_VISION_MODEL` (optional override used only when images are present)
-- `GROK_IMAGE_MODEL` (used for image generation requests, recommended: `grok-imagine-image`)
 - `BOT_NAME` (default: `GrokBuddy`)
 - `SUPER_ADMIN_USER_ID` (bypasses channel permission checks)
 - `GIPHY_API_KEY` (for `/gif` command)
-- `IMAGE_GEN_TIMEOUT_MS` (default: `45000`)
-- `IMAGE_GEN_DEFAULT_SIZE` (default: `1024x1024`, mapped internally to aspect ratio for xAI imagine API)
-- `IMAGE_GEN_DAILY_USER_LIMIT` (default: `20`)
-- `IMAGE_GEN_DAILY_GUILD_LIMIT` (default: `500`)
-- `IMAGE_GEN_MAX_PROMPT_CHARS` (default: `1200`)
+- `WEB_SEARCH_ENABLED` (`1` to enable automatic web search augmentation)
+- `WEB_SEARCH_PROVIDER` (default: `brave`)
+- `BRAVE_SEARCH_API_KEY` (required for Brave web search)
+- `MEMORY_DEBOUNCE_MS` (default: `1500`)
+- `MEMORY_MAX_MESSAGES_PER_USER` (default: `500`)
+- `MEMORY_MAX_DAYS` (default: `45`)
+- `MEMORY_HYDRATE_MODE` (`full`, `light`, `off`; overrides NODE_ENV behavior)
+- `MEMORY_HYDRATE_MEMBER_LIMIT` (default: `1000`)
 
 **AI Intelligence Enhancement Parameters:**
 - `LLM_TEMPERATURE` (default: `0.3`) - Controls randomness (0.0-2.0). Lower = more focused, Higher = more creative
@@ -62,6 +58,7 @@ Optional:
 ### 3) Run
 ```bash
 npm start
+npm run dev
 ```
 
 Slash commands are registered automatically on startup.
@@ -84,10 +81,8 @@ Replying to another message with an image also works:
 /ask question: whats good
 /ask question: whats good ghost:false   (visible to everyone)
 /ask question: whats good ghost:true    (visible only to you - default)
-/imagine mode:image prompt:"cinematic mountain sunrise" resolution:1024x1024 style:vivid
 /poll question:"Best lunch?" options:"Pizza|Tacos|Sushi" duration:2h
 /gif query:"vibes"
-/image-policy view
 ```
 
 The `ghost` parameter controls message visibility:
@@ -108,7 +103,14 @@ The `ghost` parameter controls message visibility:
 Memory starts disabled for all **guild channels**. In allowlisted guild channels, the bot passively records all messages from users who have memory enabled, regardless of whether the bot is mentioned or responds. This provides channel and server context for the bot. Use:
 - `/memory-allow <channel>`
 - `/memory-deny <channel>`
-- `/memory-list`
+- `/memory-list` 
+- `/memory-scope <allowlist|allow_all_visible>` (admin)
+- `/status <on|off|view>` (admin, controls ephemeral status sidecar)
+
+### Search
+- `/search memory <query>` — search remembered chat context
+- `/search web <query>` — search the web (provider-based)
+- `/search all <query>` — search both memory and web
 
 ### Message management (guild admins)
 - `/purge <timeframe> <channel>` — delete all bot messages in a channel within the specified timeframe (1h, 6h, 12h, 24h, 7d, 30d, or all time)
@@ -130,14 +132,6 @@ DMs are allowed for memory writes when the user has memory enabled.
 
 ### GIFs
 - Search Giphy with `/gif query:"cats"` (requires `GIPHY_API_KEY`)
-
-### Image generation
-- Ask naturally in mentions/DMs or `/ask` (e.g., `generate a watercolor fox in snow`).
-- Use `/imagine` for explicit controls (mode, resolution, style, ghost response).
-- `mode:video` is reserved for future use and currently disabled.
-- For remix-style prompts, react to an image first, then ask for a remix in the same channel.
-- Admins can tune restrictions/quotas with `/image-policy` subcommands.
-- Generated images are posted as Discord attachments (not transient provider URLs).
 
 ### Videos
 - Reply to a video with `@BotName` or use `/ask` while replying; the bot will acknowledge video context. Advanced transcription is not enabled by default.

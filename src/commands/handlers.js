@@ -1,4 +1,4 @@
-import { PermissionFlagsBits } from 'discord.js';
+import { EmbedBuilder, PermissionFlagsBits } from 'discord.js';
 import {
   getUserSettings,
   isChannelAllowed,
@@ -9,12 +9,7 @@ import {
   viewMemory,
   getProfileSummary,
   getRecentMessages,
-  getRecentChannelMessages,
-  getChannelSummary,
-  getGuildSummary,
-  getGuildUserNames,
   getUserContext,
-  getServerContext,
   allowChannel,
   denyChannel,
   listChannels,
@@ -25,17 +20,18 @@ import {
   trackBotMessage,
   getBotMessagesInChannel,
   deleteBotMessageRecord,
-  setImagePolicyOverride,
-  listImagePolicyOverrides,
+  setGuildMemoryScope,
+  getGuildMemorySettings,
+  setGuildStatusVisibility,
+  isGuildStatusVisibilityEnabled,
+  searchMemory,
+  logSearchEvent,
 } from '../memory.js';
 import { checkRateLimit } from '../rateLimit.js';
 import { searchGiphyGif } from '../services/media.js';
 import { handlePrompt } from '../handlers/handlePrompt.js';
 import { DISCORD_INTERACTION_EXPIRED_CODE, DISCORD_UNKNOWN_MESSAGE_CODE, DISCORD_BULK_DELETE_LIMIT, NUMBER_EMOJIS } from '../utils/constants.js';
 import { parseDuration, containsHateSpeech } from '../utils/validators.js';
-import { shouldRecordMemoryMessage } from '../utils/helpers.js';
-import { formatPolicySummary, getImagePolicy, parseImagePolicyValue } from '../services/imagePolicy.js';
-import { getRecentReactionContext } from '../services/reactionContext.js';
 import {
   createPoll,
   recordVote,
@@ -43,45 +39,21 @@ import {
   tallyVotes,
   closePoll,
 } from '../polls.js';
-
-function normalizeReplyPayload(payload) {
-  if (typeof payload === 'string') return { content: payload };
-  if (!payload || typeof payload !== 'object') return { content: ' ' };
-  return payload;
-}
-
-function wantsReactionMedia(text) {
-  if (!text) return false;
-  return /(remix|variation|recreate|restyle|edit this|use this image|use that image|based on (this|that))/i.test(text);
-}
+import { shouldRecordMemoryMessage } from '../utils/helpers.js';
+import { searchWeb } from '../services/webSearch/index.js';
 
 export async function executeAskCommand(interaction, inMemoryTurns, client) {
   const question = interaction.options.getString('question', true);
   const ghost = interaction.options.getBoolean('ghost') ?? true;
-  let replyContextText = '';
-  let mediaItems = [];
-  if (wantsReactionMedia(question)) {
-    const reactionContext = await getRecentReactionContext({
-      client,
-      userId: interaction.user.id,
-      guildId: interaction.guildId,
-      channelId: interaction.channelId,
-    });
-    if (reactionContext?.media?.length) {
-      mediaItems = reactionContext.media;
-      replyContextText = `Reacted context from ${reactionContext.author}: ${reactionContext.text || '[no text]'} [media attached]`;
-    }
-  }
   const settings = getUserSettings(interaction.user.id);
   const memoryChannel = interaction.channel?.isDMBased?.()
     ? true
-    : isChannelAllowed(interaction.channelId);
+    : isChannelAllowed(interaction.channelId, interaction.guildId);
   const allowMemoryContext = memoryChannel && settings.memory_enabled;
   const displayName =
     interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
   const username = interaction.user.username;
   const globalName = interaction.user.globalName || '';
-  const channelType = interaction.channel?.isDMBased?.() ? 'dm' : 'guild';
 
   if (containsHateSpeech(question)) {
     await interaction.reply({ content: 'nah, not touching that.', ephemeral: true });
@@ -89,15 +61,14 @@ export async function executeAskCommand(interaction, inMemoryTurns, client) {
   }
 
   const replyFn = async (text) => {
-    const payload = normalizeReplyPayload(text);
     try {
       let reply;
       if (interaction.deferred) {
-        reply = await interaction.editReply(payload);
+        reply = await interaction.editReply({ content: text });
       } else if (interaction.replied) {
-        reply = await interaction.followUp({ ...payload, ephemeral: ghost });
+        reply = await interaction.followUp({ content: text, ephemeral: ghost });
       } else {
-        reply = await interaction.reply({ ...payload, ephemeral: ghost });
+        reply = await interaction.reply({ content: text, ephemeral: ghost });
       }
       if (reply?.id && !ghost) {
         trackBotMessage(reply.id, interaction.channelId, interaction.guildId);
@@ -125,8 +96,7 @@ export async function executeAskCommand(interaction, inMemoryTurns, client) {
     }
   };
 
-  const didRecord = allowMemoryContext && shouldRecordMemoryMessage(question, false);
-  if (didRecord) {
+  if (allowMemoryContext && shouldRecordMemoryMessage(question, false)) {
     queueUserMessage({
       userId: interaction.user.id,
       channelId: interaction.channelId,
@@ -135,9 +105,34 @@ export async function executeAskCommand(interaction, inMemoryTurns, client) {
       displayName,
       username,
       globalName,
-      channelType,
+      channelType: interaction.guildId ? 'guild' : 'dm',
     });
   }
+
+  let statusMessageId = null;
+  const statusEnabled = interaction.guildId ? isGuildStatusVisibilityEnabled(interaction.guildId) : false;
+  const statusFn = statusEnabled
+    ? async (stage, details = {}) => {
+      const embed = new EmbedBuilder()
+        .setTitle('Response Status')
+        .setDescription(stage)
+        .addFields(
+          { name: 'Memory hits', value: String(details.memoryHits ?? 0), inline: true },
+          { name: 'Web hits', value: String(details.webHits ?? 0), inline: true },
+          { name: 'Scope', value: String(details.escalationStep || details.phase || 'local'), inline: true }
+        )
+        .setTimestamp(new Date());
+      if (!interaction.deferred && !interaction.replied) {
+        await typingFn();
+      }
+      if (!statusMessageId) {
+        const statusMessage = await interaction.followUp({ embeds: [embed], ephemeral: true });
+        statusMessageId = statusMessage.id;
+      } else {
+        await interaction.webhook.editMessage(statusMessageId, { embeds: [embed] });
+      }
+    }
+    : null;
 
   await handlePrompt({
     userId: interaction.user.id,
@@ -145,17 +140,17 @@ export async function executeAskCommand(interaction, inMemoryTurns, client) {
     channelId: interaction.channelId,
     prompt: question,
     reply: replyFn,
-    replyContextText,
-    mediaItems,
+    replyContextText: '',
+    imageUrls: [],
     allowMemory: allowMemoryContext,
-    alreadyRecorded: didRecord,
+    alreadyRecorded: allowMemoryContext,
     onTyping: typingFn,
+    onStatus: statusFn,
     displayName,
     userName: username,
     userGlobalName: globalName,
-    channelType,
+    channelType: interaction.guildId ? 'guild' : 'dm',
     inMemoryTurns,
-    client,
   });
 }
 
@@ -240,138 +235,6 @@ export async function executeGifCommand(interaction) {
   await interaction.editReply({ content: 'Posted your GIF!' });
 }
 
-export async function executeImagineCommand(interaction, inMemoryTurns, client) {
-  const mode = interaction.options.getString('mode', true);
-  const prompt = interaction.options.getString('prompt', true);
-  const resolution = interaction.options.getString('resolution') || '1024x1024';
-  const styleRaw = interaction.options.getString('style') || 'default';
-  const style = styleRaw === 'default' ? '' : styleRaw;
-  const ghost = interaction.options.getBoolean('ghost') ?? true;
-  let replyContextText = '';
-  let mediaItems = [];
-  if (wantsReactionMedia(prompt)) {
-    const reactionContext = await getRecentReactionContext({
-      client,
-      userId: interaction.user.id,
-      guildId: interaction.guildId,
-      channelId: interaction.channelId,
-    });
-    if (reactionContext?.media?.length) {
-      mediaItems = reactionContext.media;
-      replyContextText = `Reacted context from ${reactionContext.author}: ${reactionContext.text || '[no text]'} [media attached]`;
-    }
-  }
-
-  if (mode === 'video') {
-    await interaction.reply({
-      content: 'Video generation is not enabled yet. Use `mode:image` for now.',
-      ephemeral: true,
-    });
-    return;
-  }
-
-  if (containsHateSpeech(prompt)) {
-    await interaction.reply({ content: 'nah, not touching that.', ephemeral: true });
-    return;
-  }
-
-  const settings = getUserSettings(interaction.user.id);
-  const memoryChannel = interaction.channel?.isDMBased?.()
-    ? true
-    : isChannelAllowed(interaction.channelId);
-  const allowMemoryContext = memoryChannel && settings.memory_enabled;
-  const displayName =
-    interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
-  const username = interaction.user.username;
-  const globalName = interaction.user.globalName || '';
-  const channelType = interaction.channel?.isDMBased?.() ? 'dm' : 'guild';
-
-  const replyFn = async (text) => {
-    const payload = normalizeReplyPayload(text);
-    try {
-      let reply;
-      if (interaction.deferred) {
-        reply = await interaction.editReply(payload);
-      } else if (interaction.replied) {
-        reply = await interaction.followUp({ ...payload, ephemeral: ghost });
-      } else {
-        reply = await interaction.reply({ ...payload, ephemeral: ghost });
-      }
-      if (reply?.id && !ghost) {
-        trackBotMessage(reply.id, interaction.channelId, interaction.guildId);
-      }
-    } catch (err) {
-      if (err?.code === 50013 && payload?.files?.length) {
-        const fallback = {
-          content: 'I need the `Attach Files` permission in this channel to send generated images.',
-        };
-        if (interaction.deferred) {
-          await interaction.editReply(fallback);
-        } else if (interaction.replied) {
-          await interaction.followUp({ ...fallback, ephemeral: ghost });
-        } else {
-          await interaction.reply({ ...fallback, ephemeral: ghost });
-        }
-        return;
-      }
-      if (err.code === DISCORD_INTERACTION_EXPIRED_CODE) {
-        console.error('Failed to send reply: Interaction expired before response could be sent');
-      } else {
-        throw err;
-      }
-    }
-  };
-
-  const typingFn = async () => {
-    try {
-      if (!interaction.deferred && !interaction.replied) {
-        await interaction.deferReply({ ephemeral: ghost });
-      }
-    } catch (err) {
-      if (err.code === DISCORD_INTERACTION_EXPIRED_CODE) {
-        console.error('Failed to defer reply: Interaction expired before deferReply could be called');
-      } else {
-        throw err;
-      }
-    }
-  };
-
-  const didRecord = allowMemoryContext && shouldRecordMemoryMessage(prompt, false);
-  if (didRecord) {
-    queueUserMessage({
-      userId: interaction.user.id,
-      channelId: interaction.channelId,
-      guildId: interaction.guildId,
-      content: prompt,
-      displayName,
-      username,
-      globalName,
-      channelType,
-    });
-  }
-
-  await handlePrompt({
-    userId: interaction.user.id,
-    guildId: interaction.guildId,
-    channelId: interaction.channelId,
-    prompt,
-    reply: replyFn,
-    replyContextText,
-    mediaItems,
-    allowMemory: allowMemoryContext,
-    alreadyRecorded: didRecord,
-    onTyping: typingFn,
-    displayName,
-    userName: username,
-    userGlobalName: globalName,
-    channelType,
-    inMemoryTurns,
-    client,
-    forceImageGeneration: true,
-    imageOptions: { size: resolution, style },
-  });
-}
-
 export async function executeMemoryCommand(interaction) {
   const sub = interaction.options.getSubcommand();
   if (sub === 'on') {
@@ -407,6 +270,8 @@ export async function executeLobotomizeCommand(interaction) {
       DELETE FROM user_settings;
       DELETE FROM channel_profiles;
       DELETE FROM guild_profiles;
+      DELETE FROM guild_memory_settings;
+      DELETE FROM search_events;
     `);
     await interaction.reply({ content: '🧠💥 **TOTAL LOBOTOMY COMPLETE** - All memory wiped across all users, channels, and guilds.' });
   } else {
@@ -441,6 +306,110 @@ export async function executeMemoryListCommand(interaction) {
     .map((row) => `• <#${row.channel_id}>: ${row.enabled ? 'allowed' : 'denied'}`)
     .join('\n');
   await interaction.reply({ content: formatted });
+}
+
+export async function executeMemoryScopeCommand(interaction) {
+  const mode = interaction.options.getString('mode', true);
+  const safeMode = mode === 'allow_all_visible' ? 'allow_all_visible' : 'allowlist';
+  setGuildMemoryScope(interaction.guildId, safeMode);
+  const label = safeMode === 'allow_all_visible'
+    ? 'allow all visible channels'
+    : 'allowlist only';
+  await interaction.reply({ content: `Memory scope updated: ${label}.` });
+}
+
+export async function executeStatusCommand(interaction) {
+  const sub = interaction.options.getSubcommand();
+  if (sub === 'on') {
+    setGuildStatusVisibility(interaction.guildId, true);
+    await interaction.reply({ content: 'Status sidecar is on for this guild.' });
+    return;
+  }
+  if (sub === 'off') {
+    setGuildStatusVisibility(interaction.guildId, false);
+    await interaction.reply({ content: 'Status sidecar is off for this guild.' });
+    return;
+  }
+  const enabled = isGuildStatusVisibilityEnabled(interaction.guildId);
+  const mode = getGuildMemorySettings(interaction.guildId)?.scope_mode || 'allowlist';
+  await interaction.reply({
+    content: `Status sidecar: ${enabled ? 'on' : 'off'}\nMemory scope: ${mode}`,
+    ephemeral: true,
+  });
+}
+
+function formatSearchRows(rows = []) {
+  if (!rows.length) return 'No results.';
+  return rows
+    .slice(0, 5)
+    .map((row, idx) => `${idx + 1}. ${row.display_name || 'Unknown'}: ${row.content}`)
+    .join('\n');
+}
+
+function formatWebRows(rows = []) {
+  if (!rows.length) return 'No results.';
+  return rows
+    .slice(0, 5)
+    .map((row, idx) => `${idx + 1}. ${row.title}\n${row.url}`)
+    .join('\n\n');
+}
+
+export async function executeSearchCommand(interaction) {
+  const sub = interaction.options.getSubcommand();
+  const query = interaction.options.getString('query', true).trim();
+  if (!query) {
+    await interaction.reply({ content: 'Query is required.', ephemeral: true });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+  const start = Date.now();
+  const mode = sub;
+  const memoryRows = [];
+  let webResult = { ok: false, provider: 'web', results: [] };
+
+  if (mode === 'memory' || mode === 'all') {
+    const scope = interaction.guildId ? 'guild' : 'user';
+    memoryRows.push(
+      ...searchMemory({
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        userId: interaction.user.id,
+        query,
+        scope,
+        limit: 6,
+        respectPolicy: true,
+      })
+    );
+  }
+
+  if (mode === 'web' || mode === 'all') {
+    webResult = await searchWeb({ query, limit: 5 });
+  }
+
+  logSearchEvent({
+    userId: interaction.user.id,
+    guildId: interaction.guildId,
+    mode,
+    query,
+    provider: mode === 'memory' ? 'memory' : (webResult.provider || 'web'),
+    latencyMs: Date.now() - start,
+    hitCount: memoryRows.length + (webResult.results?.length || 0),
+  });
+
+  const sections = [];
+  if (mode === 'memory' || mode === 'all') {
+    sections.push(`**Memory results**\n${formatSearchRows(memoryRows)}`);
+  }
+  if (mode === 'web' || mode === 'all') {
+    if (!webResult.ok) {
+      sections.push(`**Web results**\nUnavailable: ${webResult.error || 'unknown error'}`);
+    } else {
+      sections.push(`**Web results (${webResult.provider})**\n${formatWebRows(webResult.results)}`);
+    }
+  }
+
+  await interaction.editReply({ content: sections.join('\n\n') || 'No results.' });
 }
 
 export async function executeMemoryResetGuildCommand(interaction) {
@@ -631,128 +600,4 @@ export async function executeAutoreplyCommand(interaction) {
   
   const status = enabled ? '✅ Auto-reply **enabled**. I\'ll respond to all your messages in this guild.' : '❌ Auto-reply **disabled**. You\'ll need to mention me.';
   await interaction.reply({ content: status, ephemeral: true });
-}
-
-export async function executeContextCommand(interaction) {
-  const sub = interaction.options.getSubcommand();
-  if (sub !== 'debug') {
-    await interaction.reply({ content: 'Unknown context command.', ephemeral: true });
-    return;
-  }
-
-  const settings = getUserSettings(interaction.user.id);
-  const isDirect = interaction.channel?.isDMBased?.() || interaction.guildId === null;
-  const memoryChannel = isDirect ? true : isChannelAllowed(interaction.channelId);
-  const allowMemoryContext = memoryChannel && settings.memory_enabled;
-
-  const profileSummary = allowMemoryContext ? getProfileSummary(interaction.user.id) : '';
-  const recentUserMessages = allowMemoryContext ? getRecentMessages(interaction.user.id, 3) : [];
-  const recentChannelMessages =
-    allowMemoryContext && interaction.channelId
-      ? getRecentChannelMessages(interaction.channelId, interaction.user.id, 3)
-      : [];
-  const channelSummary =
-    allowMemoryContext && interaction.channelId ? getChannelSummary(interaction.channelId) : '';
-  const guildSummary =
-    allowMemoryContext && interaction.guildId ? getGuildSummary(interaction.guildId) : '';
-  const knownUsers =
-    allowMemoryContext && interaction.guildId ? getGuildUserNames(interaction.guildId, 8) : [];
-  const serverContext =
-    allowMemoryContext && interaction.guildId ? getServerContext(interaction.guildId) : null;
-  const userContext =
-    allowMemoryContext && interaction.guildId ? getUserContext(interaction.guildId, interaction.user.id) : null;
-
-  const lastSeen = settings.last_seen_at
-    ? new Date(settings.last_seen_at).toLocaleString('en-US')
-    : 'n/a';
-  const lines = [];
-  lines.push(`Memory enabled: ${settings.memory_enabled ? 'yes' : 'no'}`);
-  lines.push(`Memory allowed here: ${allowMemoryContext ? 'yes' : 'no'}`);
-  lines.push(`Channel type: ${isDirect ? 'dm' : 'guild'}`);
-  lines.push(`Preferred name: ${settings.preferred_name || 'n/a'}`);
-  lines.push(`Pronouns: ${settings.pronouns || 'n/a'}`);
-  lines.push(`Last display name: ${settings.last_display_name || 'n/a'}`);
-  lines.push(`Last username: ${settings.last_username || 'n/a'}`);
-  lines.push(`Last global name: ${settings.last_global_name || 'n/a'}`);
-  lines.push(`Last seen: ${lastSeen}`);
-  lines.push(`Last channel type: ${settings.last_channel_type || 'n/a'}`);
-
-  if (profileSummary) {
-    lines.push('', '**Profile summary**', profileSummary);
-  }
-  if (recentUserMessages.length) {
-    lines.push('', '**Recent user messages**', recentUserMessages.map((m) => `- ${m}`).join('\n'));
-  }
-  if (recentChannelMessages.length) {
-    lines.push('', '**Recent channel messages**', recentChannelMessages.map((m) => `- ${m}`).join('\n'));
-  }
-  if (channelSummary) {
-    lines.push('', '**Channel summary**', channelSummary);
-  }
-  if (guildSummary) {
-    lines.push('', '**Server summary**', guildSummary);
-  }
-  if (knownUsers.length) {
-    lines.push('', `**Known users**`, knownUsers.join(', '));
-  }
-  if (serverContext) {
-    lines.push('', '**Server context**', serverContext);
-  }
-  if (userContext) {
-    lines.push('', '**User context**', userContext);
-  }
-
-  let content = lines.join('\n');
-  if (content.length > 1900) {
-    content = `${content.slice(0, 1850)}\n\n...(truncated)`;
-  }
-  await interaction.reply({ content: content || 'No context available.', ephemeral: true });
-}
-
-export async function executeImagePolicyCommand(interaction) {
-  const sub = interaction.options.getSubcommand();
-  if (sub === 'view') {
-    const policy = getImagePolicy({
-      guildId: interaction.guildId,
-      userId: interaction.user.id,
-    });
-    const guildOverrides = listImagePolicyOverrides('guild', interaction.guildId);
-    const lines = [
-      '**Effective image policy**',
-      formatPolicySummary(policy),
-      '',
-      `Guild overrides: ${guildOverrides.length || 0}`,
-    ];
-    await interaction.reply({ content: lines.join('\n'), ephemeral: true });
-    return;
-  }
-
-  if (sub === 'set') {
-    const key = interaction.options.getString('key', true);
-    const value = interaction.options.getString('value', true);
-    const parsed = parseImagePolicyValue(key, value);
-    if (parsed === null) {
-      await interaction.reply({ content: 'Invalid value for that key.', ephemeral: true });
-      return;
-    }
-    setImagePolicyOverride('guild', interaction.guildId, key, parsed);
-    await interaction.reply({ content: `Set \`${key}\` for this guild.`, ephemeral: true });
-    return;
-  }
-
-  if (sub === 'allow-user') {
-    const user = interaction.options.getUser('user', true);
-    setImagePolicyOverride('user', user.id, 'mode', 'allow');
-    await interaction.reply({ content: `Allowed image generation for ${user.username}.`, ephemeral: true });
-    return;
-  }
-
-  if (sub === 'deny-user') {
-    const user = interaction.options.getUser('user', true);
-    setImagePolicyOverride('user', user.id, 'mode', 'deny');
-    await interaction.reply({ content: `Denied image generation for ${user.username}.`, ephemeral: true });
-    return;
-  }
-
-  await interaction.reply({ content: 'Unknown image policy command.', ephemeral: true });
 }

@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { Client, GatewayIntentBits, Partials } from 'discord.js';
 import { setupEvents } from './events/index.js';
-import { cleanupTmpDir, getMissingEnvVars, setupProcessGuards } from './utils/helpers.js';
+import { setupProcessGuards } from './utils/helpers.js';
 import { flushQueuedMessages } from './memory.js';
 
 const {
@@ -13,9 +13,8 @@ const {
   GIPHY_API_KEY,
 } = process.env;
 
-const missing = getMissingEnvVars(['DISCORD_TOKEN', 'GROK_BASE_URL', 'GROK_API_KEY']);
-if (missing.length) {
-  console.error(`Missing required env vars: ${missing.join(', ')}`);
+if (!DISCORD_TOKEN || !GROK_BASE_URL || !GROK_API_KEY) {
+  console.error('Missing required env vars: DISCORD_TOKEN, GROK_BASE_URL, GROK_API_KEY');
   process.exit(1);
 }
 
@@ -47,7 +46,6 @@ const config = {
 
 async function main() {
   try {
-    cleanupTmpDir(process.cwd());
     // Setup event listeners
     setupEvents({ client, config, inMemoryTurns, pollTimers });
 

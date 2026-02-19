@@ -106,6 +106,23 @@ export const memoryListCommand = {
     .setDefaultMemberPermissions(16),
 };
 
+export const memoryScopeCommand = {
+  data: new SlashCommandBuilder()
+    .setName('memory-scope')
+    .setDescription('Configure guild memory retrieval scope')
+    .setDefaultMemberPermissions(16)
+    .addStringOption((option) =>
+      option
+        .setName('mode')
+        .setDescription('Memory retrieval scope mode')
+        .setRequired(true)
+        .addChoices(
+          { name: 'Allowlist only', value: 'allowlist' },
+          { name: 'Allow all visible channels', value: 'allow_all_visible' }
+        )
+    ),
+};
+
 export const memoryResetGuildCommand = {
   data: new SlashCommandBuilder()
     .setName('memory-reset-guild')
@@ -205,119 +222,43 @@ export const autoreplyCommand = {
     ),
 };
 
-export const contextCommand = {
+export const statusCommand = {
   data: new SlashCommandBuilder()
-    .setName('context')
-    .setDescription('Inspect the context used for bot replies')
-    .setDMPermission(true)
-    .addSubcommand((sub) =>
-      sub
-        .setName('debug')
-        .setDescription('Show stored memory and context snapshot')
-    ),
-};
-
-export const imagineCommand = {
-  data: new SlashCommandBuilder()
-    .setName('imagine')
-    .setDescription('Generate an image (video mode reserved for future use)')
-    .setDMPermission(true)
-    .addStringOption((option) =>
-      option
-        .setName('mode')
-        .setDescription('Generation mode')
-        .setRequired(true)
-        .addChoices(
-          { name: 'Image', value: 'image' },
-          { name: 'Video (disabled)', value: 'video' }
-        )
-    )
-    .addStringOption((option) =>
-      option
-        .setName('prompt')
-        .setDescription('Describe what to generate')
-        .setRequired(true)
-    )
-    .addStringOption((option) =>
-      option
-        .setName('resolution')
-        .setDescription('Output resolution preset')
-        .setRequired(false)
-        .addChoices(
-          { name: '512x512', value: '512x512' },
-          { name: '768x768', value: '768x768' },
-          { name: '1024x1024 (default)', value: '1024x1024' },
-          { name: '1024x1536 (portrait)', value: '1024x1536' },
-          { name: '1536x1024 (landscape)', value: '1536x1024' }
-        )
-    )
-    .addStringOption((option) =>
-      option
-        .setName('style')
-        .setDescription('Style hint')
-        .setRequired(false)
-        .addChoices(
-          { name: 'Default', value: 'default' },
-          { name: 'Vivid', value: 'vivid' },
-          { name: 'Natural', value: 'natural' }
-        )
-    )
-    .addBooleanOption((option) =>
-      option
-        .setName('ghost')
-        .setDescription('Make the response visible only to you (ghost message)')
-        .setRequired(false)
-    ),
-};
-
-export const imagePolicyCommand = {
-  data: new SlashCommandBuilder()
-    .setName('image-policy')
-    .setDescription('Manage image generation policy')
+    .setName('status')
+    .setDescription('Configure response status sidecar visibility')
     .setDefaultMemberPermissions(16)
+    .addSubcommand((sub) => sub.setName('on').setDescription('Enable status sidecar for this guild'))
+    .addSubcommand((sub) => sub.setName('off').setDescription('Disable status sidecar for this guild'))
+    .addSubcommand((sub) => sub.setName('view').setDescription('View current status sidecar setting')),
+};
+
+export const searchCommand = {
+  data: new SlashCommandBuilder()
+    .setName('search')
+    .setDescription('Search memory and/or the web')
+    .setDMPermission(true)
     .addSubcommand((sub) =>
       sub
-        .setName('view')
-        .setDescription('View effective image policy for this server')
-    )
-    .addSubcommand((sub) =>
-      sub
-        .setName('set')
-        .setDescription('Set a policy key for this server')
+        .setName('memory')
+        .setDescription('Search remembered conversation history')
         .addStringOption((option) =>
-          option
-            .setName('key')
-            .setDescription('Policy key')
-            .setRequired(true)
-            .addChoices(
-              { name: 'enabled', value: 'enabled' },
-              { name: 'max_prompt_chars', value: 'max_prompt_chars' },
-              { name: 'user_daily_limit', value: 'user_daily_limit' },
-              { name: 'guild_daily_limit', value: 'guild_daily_limit' },
-              { name: 'blocked_terms', value: 'blocked_terms' }
-            )
+          option.setName('query').setDescription('What to search for').setRequired(true)
         )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('web')
+        .setDescription('Search the web')
         .addStringOption((option) =>
-          option
-            .setName('value')
-            .setDescription('Policy value (comma-separated for blocked_terms)')
-            .setRequired(true)
+          option.setName('query').setDescription('What to search for').setRequired(true)
         )
     )
     .addSubcommand((sub) =>
       sub
-        .setName('allow-user')
-        .setDescription('Allow a user to bypass image policy denies/quotas')
-        .addUserOption((option) =>
-          option.setName('user').setDescription('User to allow').setRequired(true)
-        )
-    )
-    .addSubcommand((sub) =>
-      sub
-        .setName('deny-user')
-        .setDescription('Deny a user from using image generation')
-        .addUserOption((option) =>
-          option.setName('user').setDescription('User to deny').setRequired(true)
+        .setName('all')
+        .setDescription('Search memory and web')
+        .addStringOption((option) =>
+          option.setName('query').setDescription('What to search for').setRequired(true)
         )
     ),
 };
@@ -326,11 +267,11 @@ export const commands = [
   askCommand,
   pollCommand,
   gifCommand,
-  imagineCommand,
   memoryCommand,
   memoryAllowCommand,
   memoryDenyCommand,
   memoryListCommand,
+  memoryScopeCommand,
   memoryResetGuildCommand,
   memoryResetChannelCommand,
   memoryResetUserCommand,
@@ -339,6 +280,6 @@ export const commands = [
   serverInfoCommand,
   myDataCommand,
   autoreplyCommand,
-  contextCommand,
-  imagePolicyCommand,
+  statusCommand,
+  searchCommand,
 ];

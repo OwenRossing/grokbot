@@ -1,40 +1,25 @@
 import { getUserSettings, isChannelAllowed, queueUserMessage, trackBotMessage } from '../memory.js';
 import { getReplyId, shouldHandleEdit, trackReply as trackReplySync } from '../editSync.js';
 import { handlePrompt } from './handlePrompt.js';
-import { stripMention, parseQuotedPoll, containsHateSpeech } from '../utils/validators.js';
+import { getMessageImageUrls, getMessageVideoUrls, stripMention, parseQuotedPoll, containsHateSpeech } from '../utils/validators.js';
 import { NUMBER_EMOJIS } from '../utils/constants.js';
 import { createPoll, getPollByMessageId, recordVote, removeVote } from '../polls.js';
 import { getReplyContext } from '../services/media.js';
 import { routeIntent } from '../services/intentRouter.js';
-import { mergeMediaQueues, normalizeMediaFromMessage } from '../utils/media.js';
-import { shouldRecordMemoryMessage, trackMetric } from '../utils/helpers.js';
-import { getRecentReactionContext } from '../services/reactionContext.js';
-
-function normalizeReplyPayload(payload) {
-  if (typeof payload === 'string') return { content: payload };
-  if (!payload || typeof payload !== 'object') return { content: '' };
-  return payload;
-}
-
-function wantsReactionMedia(text) {
-  if (!text) return false;
-  return /(remix|variation|recreate|restyle|edit this|use this image|use that image|based on (this|that))/i.test(text);
-}
+import { shouldRecordMemoryMessage } from '../utils/helpers.js';
 
 export async function handleMessage({ client, message, inMemoryTurns }) {
   if (message.author.bot) return;
 
   const isDirect = message.channel?.isDMBased?.() || message.guildId === null;
-  const memoryChannel = isDirect || isChannelAllowed(message.channelId);
+  const memoryChannel = isDirect || isChannelAllowed(message.channelId, message.guildId);
   const settings = getUserSettings(message.author.id);
   const allowMemoryContext = memoryChannel && settings.memory_enabled;
   const displayName = message.member?.displayName || message.author.globalName || message.author.username;
   const username = message.author.username;
   const globalName = message.author.globalName || '';
   
-  const initialMediaItems = normalizeMediaFromMessage(message);
-  const didRecordMemory = allowMemoryContext && shouldRecordMemoryMessage(message.content, initialMediaItems.length > 0);
-  if (didRecordMemory) {
+  if (allowMemoryContext && shouldRecordMemoryMessage(message.content, false)) {
     queueUserMessage({
       userId: message.author.id,
       channelId: message.channelId,
@@ -106,57 +91,32 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
 
   const replyContext = await getReplyContext(message);
   const replyContextText = replyContext
-    ? `Reply context from ${replyContext.author}: ${replyContext.text || '[no text]'}${replyContext.media?.length ? ' [media attached]' : ''}`
+    ? `Reply context from ${replyContext.author}: ${replyContext.text || '[no text]'}${(replyContext.videos?.length ? ' [video referenced]' : '')}`
     : '';
+  
+  // Collect image URLs (GIFs remain as URLs so the model can fetch them directly)
+  const imageUrls = [
+    ...getMessageImageUrls(message),
+    ...(replyContext?.images || []),
+  ];
 
-  let mediaItems = mergeMediaQueues(initialMediaItems, replyContext?.media || []);
-  let effectiveReplyContextText = replyContextText;
-  if (!mediaItems.length && wantsReactionMedia(content)) {
-    const reactionContext = await getRecentReactionContext({
-      client,
-      userId: message.author.id,
-      guildId: message.guildId,
-      channelId: message.channelId,
-    });
-    if (reactionContext?.media?.length) {
-      mediaItems = mergeMediaQueues(mediaItems, reactionContext.media);
-      const reactionText = `Reacted context from ${reactionContext.author}: ${reactionContext.text || '[no text]'} [media attached]`;
-      effectiveReplyContextText = effectiveReplyContextText
-        ? `${effectiveReplyContextText}\n${reactionText}`
-        : reactionText;
-    }
+  if (imageUrls.length) {
+    console.info('Collected image URLs:', imageUrls);
   }
-
-  if (mediaItems.length) {
-    console.info('Collected media items:', mediaItems.map((item) => `${item.type}:${item.url}`));
-    const counts = mediaItems.reduce((acc, item) => {
-      acc[item.type] = (acc[item.type] || 0) + 1;
-      return acc;
-    }, {});
-    if (counts.image) trackMetric('media.image', counts.image);
-    if (counts.gif) trackMetric('media.gif', counts.gif);
-    if (counts.video) trackMetric('media.video', counts.video);
+  
+  const videoUrls = [
+    ...getMessageVideoUrls(message),
+    ...(replyContext?.videos || []),
+  ];
+  if (videoUrls.length) {
+    console.info('Collected video URLs:', videoUrls);
   }
-
-  if (!content && !mediaItems.length && !effectiveReplyContextText) return;
+  if (!content && !imageUrls.length && !replyContextText) return;
 
   const replyFn = async (text) => {
-    const payload = normalizeReplyPayload(text);
-    let sent;
-    try {
-      sent = isDirect
-        ? await message.channel.send(payload)
-        : await message.reply(payload);
-    } catch (err) {
-      if (err?.code === 50013 && payload?.files?.length) {
-        const fallback = { content: 'I need the `Attach Files` permission in this channel to send generated images.' };
-        sent = isDirect
-          ? await message.channel.send(fallback)
-          : await message.reply(fallback);
-      } else {
-        throw err;
-      }
-    }
+    const sent = isDirect 
+      ? await message.channel.send({ content: text })
+      : await message.reply({ content: text });
     trackReplySync({ userMessageId: message.id, botReplyId: sent.id });
     trackBotMessage(sent.id, message.channelId, message.guildId);
   };
@@ -170,17 +130,17 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
     channelId: message.channelId,
     prompt: content,
     reply: replyFn,
-    replyContextText: effectiveReplyContextText,
-    mediaItems,
+    replyContextText,
+    imageUrls,
+    videoUrls,
     allowMemory: allowMemoryContext,
-    alreadyRecorded: didRecordMemory,
+    alreadyRecorded: allowMemoryContext,
     onTyping: typingFn,
     displayName,
     userName: username,
     userGlobalName: globalName,
     channelType: isDirect ? 'dm' : 'guild',
     inMemoryTurns,
-    client,
   });
 }
 
@@ -190,16 +150,14 @@ export async function handleMessageUpdate({ client, newMessage, inMemoryTurns })
   if (hydrated.author?.bot) return;
 
   const isDirect = hydrated.channel?.isDMBased?.() || hydrated.guildId === null;
-  const memoryChannel = isDirect || isChannelAllowed(hydrated.channelId);
+  const memoryChannel = isDirect || isChannelAllowed(hydrated.channelId, hydrated.guildId);
   const settings = getUserSettings(hydrated.author.id);
   const allowMemoryContext = memoryChannel && settings.memory_enabled;
   const displayName = hydrated.member?.displayName || hydrated.author.globalName || hydrated.author.username;
   const username = hydrated.author.username;
   const globalName = hydrated.author.globalName || '';
 
-  const hydratedMediaItems = normalizeMediaFromMessage(hydrated);
-  const didRecordHydrated = allowMemoryContext && shouldRecordMemoryMessage(hydrated.content, hydratedMediaItems.length > 0);
-  if (didRecordHydrated) {
+  if (allowMemoryContext && shouldRecordMemoryMessage(hydrated.content, false)) {
     queueUserMessage({
       userId: hydrated.author.id,
       channelId: hydrated.channelId,
@@ -222,42 +180,20 @@ export async function handleMessageUpdate({ client, newMessage, inMemoryTurns })
     : stripMention(hydrated.content, client.user.id);
   const replyContext = await getReplyContext(hydrated);
   const replyContextText = replyContext
-    ? `Reply context from ${replyContext.author}: ${replyContext.text || '[no text]'}${replyContext.media?.length ? ' [media attached]' : ''}`
+    ? `Reply context from ${replyContext.author}: ${replyContext.text || '[no text]'}`
     : '';
-  let mediaItems = mergeMediaQueues(hydratedMediaItems, replyContext?.media || []);
-  let effectiveReplyContextText = replyContextText;
-  if (!mediaItems.length && wantsReactionMedia(content)) {
-    const reactionContext = await getRecentReactionContext({
-      client,
-      userId: hydrated.author.id,
-      guildId: hydrated.guildId,
-      channelId: hydrated.channelId,
-    });
-    if (reactionContext?.media?.length) {
-      mediaItems = mergeMediaQueues(mediaItems, reactionContext.media);
-      const reactionText = `Reacted context from ${reactionContext.author}: ${reactionContext.text || '[no text]'} [media attached]`;
-      effectiveReplyContextText = effectiveReplyContextText
-        ? `${effectiveReplyContextText}\n${reactionText}`
-        : reactionText;
-    }
-  }
-  if (!content && !mediaItems.length && !effectiveReplyContextText) return;
+  const imageUrls = [
+    ...getMessageImageUrls(hydrated),
+    ...(replyContext?.images || []),
+  ];
+  if (!content && !imageUrls.length && !replyContextText) return;
 
   const replyId = getReplyId(hydrated.id);
   if (!replyId) return;
 
   const replyFn = async (text) => {
-    const payload = normalizeReplyPayload(text);
     const messageToEdit = await hydrated.channel.messages.fetch(replyId);
-    try {
-      await messageToEdit.edit(payload);
-    } catch (err) {
-      if (err?.code === 50013 && payload?.files?.length) {
-        await messageToEdit.edit({ content: 'I need the `Attach Files` permission in this channel to send generated images.' });
-      } else {
-        throw err;
-      }
-    }
+    await messageToEdit.edit({ content: text });
   };
   const typingFn = async () => {
     await hydrated.channel.sendTyping();
@@ -269,16 +205,16 @@ export async function handleMessageUpdate({ client, newMessage, inMemoryTurns })
     channelId: hydrated.channelId,
     prompt: content,
     reply: replyFn,
-    replyContextText: effectiveReplyContextText,
-    mediaItems,
+    replyContextText,
+    imageUrls,
+    videoUrls: [],
     allowMemory: allowMemoryContext,
-    alreadyRecorded: didRecordHydrated,
+    alreadyRecorded: allowMemoryContext,
     onTyping: typingFn,
     displayName,
     userName: username,
     userGlobalName: globalName,
     channelType: isDirect ? 'dm' : 'guild',
     inMemoryTurns,
-    client,
   });
 }

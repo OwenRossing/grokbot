@@ -73,9 +73,6 @@ const systemPrompt = (() => {
 
 const fallbackErrorLine =
   'cant answer rn bro too busy gooning (grok api error)';
-const failureWindowMs = 60_000;
-const failureTimestamps = [];
-let warnedVisionUnsupported = false;
 
 function buildMessages({
   botName,
@@ -92,6 +89,8 @@ function buildMessages({
   serverContext,
   userContext,
   contextStack,
+  retrievedContextBlocks,
+  webSearchResults,
 }) {
   const messages = [
     {
@@ -99,26 +98,16 @@ function buildMessages({
       content: systemPrompt.replace('{BOT_NAME}', botName),
     },
   ];
-  const contextBlocks = [];
 
+  const contextBlocks = [];
   if (contextStack) {
     const lines = [];
     if (contextStack.channelType) lines.push(`- Channel: ${contextStack.channelType}`);
-    if (typeof contextStack.memoryEnabled === 'boolean') {
-      lines.push(`- Memory enabled: ${contextStack.memoryEnabled ? 'yes' : 'no'}`);
-    }
-    if (typeof contextStack.memoryAllowed === 'boolean') {
-      lines.push(`- Memory allowed here: ${contextStack.memoryAllowed ? 'yes' : 'no'}`);
-    }
-    if (typeof contextStack.replyContext === 'boolean') {
-      lines.push(`- Replying to a message: ${contextStack.replyContext ? 'yes' : 'no'}`);
-    }
-    if (typeof contextStack.imageCount === 'number') {
-      lines.push(`- Images attached: ${contextStack.imageCount}`);
-    }
-    if (typeof contextStack.videoCount === 'number') {
-      lines.push(`- Videos attached: ${contextStack.videoCount}`);
-    }
+    if (typeof contextStack.memoryEnabled === 'boolean') lines.push(`- Memory enabled: ${contextStack.memoryEnabled ? 'yes' : 'no'}`);
+    if (typeof contextStack.memoryAllowed === 'boolean') lines.push(`- Memory allowed here: ${contextStack.memoryAllowed ? 'yes' : 'no'}`);
+    if (typeof contextStack.replyContext === 'boolean') lines.push(`- Replying to message: ${contextStack.replyContext ? 'yes' : 'no'}`);
+    if (typeof contextStack.imageCount === 'number') lines.push(`- Images attached: ${contextStack.imageCount}`);
+    if (typeof contextStack.videoCount === 'number') lines.push(`- Videos attached: ${contextStack.videoCount}`);
     if (contextStack.preferredName) lines.push(`- Preferred name: ${contextStack.preferredName}`);
     if (contextStack.displayName) lines.push(`- Display name: ${contextStack.displayName}`);
     if (contextStack.pronouns) lines.push(`- Pronouns: ${contextStack.pronouns}`);
@@ -130,44 +119,30 @@ function buildMessages({
     }
   }
 
-  if (serverContext) {
-    contextBlocks.push(`Server info:\n${serverContext}`);
-  }
-
-  if (userContext) {
-    contextBlocks.push(`User info:\n${userContext}`);
-  }
-
-  if (replyContext) {
-    contextBlocks.push(replyContext);
-  }
-
-  if (profileSummary) {
-    contextBlocks.push(`User profile summary: ${profileSummary}`);
-  }
-
+  if (serverContext) contextBlocks.push(`Server info:\n${serverContext}`);
+  if (userContext) contextBlocks.push(`User info:\n${userContext}`);
+  if (replyContext) contextBlocks.push(replyContext);
+  if (profileSummary) contextBlocks.push(`User profile summary: ${profileSummary}`);
   if (recentUserMessages?.length) {
     const formatted = recentUserMessages.map((msg) => `- ${msg}`).join('\n');
     contextBlocks.push(`Recent user messages:\n${formatted}`);
   }
-
-  if (channelSummary) {
-    contextBlocks.push(`Channel summary: ${channelSummary}`);
-  }
-
-  if (guildSummary) {
-    contextBlocks.push(`Server summary: ${guildSummary}`);
-  }
-
-  if (knownUsers?.length) {
-    contextBlocks.push(`Known users in this server: ${knownUsers.join(', ')}`);
-  }
-
+  if (channelSummary) contextBlocks.push(`Channel summary: ${channelSummary}`);
+  if (guildSummary) contextBlocks.push(`Server summary: ${guildSummary}`);
+  if (knownUsers?.length) contextBlocks.push(`Known users in this server: ${knownUsers.join(', ')}`);
   if (recentChannelMessages?.length) {
     const formatted = recentChannelMessages.map((msg) => `- ${msg}`).join('\n');
     contextBlocks.push(`Recent channel messages:\n${formatted}`);
   }
-
+  if (retrievedContextBlocks?.length) {
+    contextBlocks.push(...retrievedContextBlocks);
+  }
+  if (webSearchResults?.length) {
+    const webBlock = webSearchResults
+      .map((row) => `- ${row.title}: ${row.snippet} (${row.url})`)
+      .join('\n');
+    contextBlocks.push(`Web search snippets:\n${webBlock}`);
+  }
   if (contextBlocks.length) {
     messages.push({
       role: 'system',
@@ -203,7 +178,6 @@ async function callOnce({
   userContent,
   replyContext,
   imageInputs,
-  forceVision,
   recentUserMessages,
   recentChannelMessages,
   channelSummary,
@@ -212,8 +186,10 @@ async function callOnce({
   serverContext,
   userContext,
   contextStack,
+  retrievedContextBlocks,
+  webSearchResults,
 }) {
-  const model = (imageInputs?.length || forceVision) ? DEFAULT_VISION_MODEL || DEFAULT_MODEL : DEFAULT_MODEL;
+  const model = imageInputs?.length ? DEFAULT_VISION_MODEL || DEFAULT_MODEL : DEFAULT_MODEL;
   const baseUrl = normalizeBaseUrl(process.env.GROK_BASE_URL);
   const payload = {
     model,
@@ -236,6 +212,8 @@ async function callOnce({
       serverContext,
       userContext,
       contextStack,
+      retrievedContextBlocks,
+      webSearchResults,
     }),
   };
 
@@ -278,7 +256,6 @@ export async function getLLMResponse({
   userContent,
   replyContext,
   imageInputs,
-  forceVision,
   recentUserMessages,
   recentChannelMessages,
   channelSummary,
@@ -287,6 +264,8 @@ export async function getLLMResponse({
   serverContext,
   userContext,
   contextStack,
+  retrievedContextBlocks,
+  webSearchResults,
 }) {
   try {
     return await callOnce({
@@ -296,7 +275,6 @@ export async function getLLMResponse({
       userContent,
       replyContext,
       imageInputs,
-      forceVision,
       recentUserMessages,
       recentChannelMessages,
       channelSummary,
@@ -305,26 +283,15 @@ export async function getLLMResponse({
       serverContext,
       userContext,
       contextStack,
+      retrievedContextBlocks,
+      webSearchResults,
     });
   } catch (err) {
-    const now = Date.now();
-    failureTimestamps.push(now);
-    while (failureTimestamps.length && now - failureTimestamps[0] > failureWindowMs) {
-      failureTimestamps.shift();
-    }
     if (err?.code === 'VISION_UNSUPPORTED') {
-      if (!warnedVisionUnsupported) {
-        console.warn('Vision-capable model not available; returning guidance to configure GROK_VISION_MODEL.');
-        warnedVisionUnsupported = true;
-      }
       return 'image input needs a vision-capable model. set GROK_VISION_MODEL or use a multimodal GROK_MODEL.';
     }
     console.error('LLM request failed (first attempt):', err);
-    if (failureTimestamps.length >= 6) {
-      return fallbackErrorLine;
-    }
-    const retryDelay = failureTimestamps.length >= 3 ? 1200 : 300;
-    await delay(retryDelay);
+    await delay(300);
     try {
       return await callOnce({
         botName,
@@ -333,7 +300,6 @@ export async function getLLMResponse({
         userContent,
         replyContext,
         imageInputs,
-        forceVision,
         recentUserMessages,
         recentChannelMessages,
         channelSummary,
@@ -342,18 +308,11 @@ export async function getLLMResponse({
         serverContext,
         userContext,
         contextStack,
+        retrievedContextBlocks,
+        webSearchResults,
       });
     } catch (retryErr) {
-      const retryNow = Date.now();
-      failureTimestamps.push(retryNow);
-      while (failureTimestamps.length && retryNow - failureTimestamps[0] > failureWindowMs) {
-        failureTimestamps.shift();
-      }
       if (retryErr?.code === 'VISION_UNSUPPORTED') {
-        if (!warnedVisionUnsupported) {
-          console.warn('Vision-capable model not available; returning guidance to configure GROK_VISION_MODEL.');
-          warnedVisionUnsupported = true;
-        }
         return 'image input needs a vision-capable model. set GROK_VISION_MODEL or use a multimodal GROK_MODEL.';
       }
       console.error('LLM request failed (retry):', retryErr);

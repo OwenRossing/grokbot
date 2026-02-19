@@ -3,12 +3,12 @@ import {
   executeAskCommand,
   executePollCommand,
   executeGifCommand,
-  executeImagineCommand,
   executeMemoryCommand,
   executeLobotomizeCommand,
   executeMemoryAllowCommand,
   executeMemoryDenyCommand,
   executeMemoryListCommand,
+  executeMemoryScopeCommand,
   executeMemoryResetGuildCommand,
   executeMemoryResetChannelCommand,
   executeMemoryResetUserCommand,
@@ -16,16 +16,14 @@ import {
   executeServerInfoCommand,
   executeMyDataCommand,
   executeAutoreplyCommand,
-  executeContextCommand,
-  executeImagePolicyCommand,
+  executeStatusCommand,
+  executeSearchCommand,
 } from '../commands/handlers.js';
-import { trackMetric } from '../utils/helpers.js';
 
 export async function handleInteraction(interaction, { inMemoryTurns, pollTimers, client, superAdminId }) {
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName } = interaction;
-  trackMetric(`command.${commandName}`);
   const isSuperAdmin = interaction.user.id === superAdminId;
   const hasAdminPerms =
     isSuperAdmin || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
@@ -33,8 +31,9 @@ export async function handleInteraction(interaction, { inMemoryTurns, pollTimers
   // Commands that require guild context
   const guildOnlyCommands = [
     'memory-allow', 'memory-deny', 'memory-list',
+    'memory-scope', 'status',
     'memory-reset-guild', 'memory-reset-channel', 'memory-reset-user',
-    'purge', 'serverinfo', 'image-policy'
+    'purge', 'serverinfo'
   ];
 
   if (guildOnlyCommands.includes(commandName)) {
@@ -56,8 +55,6 @@ export async function handleInteraction(interaction, { inMemoryTurns, pollTimers
         return await executePollCommand(interaction, pollTimers);
       case 'gif':
         return await executeGifCommand(interaction);
-      case 'imagine':
-        return await executeImagineCommand(interaction, inMemoryTurns, client);
       case 'memory':
         return await executeMemoryCommand(interaction);
       case 'memory-allow':
@@ -66,6 +63,8 @@ export async function handleInteraction(interaction, { inMemoryTurns, pollTimers
         return await executeMemoryDenyCommand(interaction);
       case 'memory-list':
         return await executeMemoryListCommand(interaction);
+      case 'memory-scope':
+        return await executeMemoryScopeCommand(interaction);
       case 'memory-reset-guild':
         return await executeMemoryResetGuildCommand(interaction);
       case 'memory-reset-channel':
@@ -82,10 +81,10 @@ export async function handleInteraction(interaction, { inMemoryTurns, pollTimers
         return await executeMyDataCommand(interaction);
       case 'autoreply':
         return await executeAutoreplyCommand(interaction);
-      case 'context':
-        return await executeContextCommand(interaction);
-      case 'image-policy':
-        return await executeImagePolicyCommand(interaction);
+      case 'status':
+        return await executeStatusCommand(interaction);
+      case 'search':
+        return await executeSearchCommand(interaction);
       default:
         await interaction.reply({ content: 'Unknown command.', ephemeral: true });
     }

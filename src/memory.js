@@ -144,6 +144,31 @@ db.exec(`
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (scope_type, scope_id, key)
   );
+
+  CREATE TABLE IF NOT EXISTS guild_memory_settings (
+    guild_id TEXT PRIMARY KEY,
+    scope_mode TEXT NOT NULL DEFAULT 'allowlist',
+    status_visibility_enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS search_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    guild_id TEXT,
+    mode TEXT NOT NULL,
+    query TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'memory',
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    hit_count INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+`);
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_user_messages_user_created_at ON user_messages(user_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_user_messages_channel_created_at ON user_messages(channel_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_user_messages_guild_created_at ON user_messages(guild_id, created_at DESC);
 `);
 
 function isDuplicateColumnError(error) {
@@ -498,6 +523,48 @@ const deleteImagePolicyOverrideStmt = db.prepare(
 const listImagePolicyOverridesStmt = db.prepare(
   'SELECT scope_type, scope_id, key, value, updated_at FROM image_policy_overrides WHERE scope_type = ? AND scope_id = ? ORDER BY key ASC'
 );
+const getGuildMemorySettingsStmt = db.prepare(
+  'SELECT guild_id, scope_mode, status_visibility_enabled, updated_at FROM guild_memory_settings WHERE guild_id = ?'
+);
+const upsertGuildMemorySettingsStmt = db.prepare(`
+  INSERT INTO guild_memory_settings (guild_id, scope_mode, status_visibility_enabled, updated_at)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT(guild_id) DO UPDATE SET
+    scope_mode = excluded.scope_mode,
+    status_visibility_enabled = excluded.status_visibility_enabled,
+    updated_at = excluded.updated_at
+`);
+const insertSearchEventStmt = db.prepare(
+  'INSERT INTO search_events (user_id, guild_id, mode, query, provider, latency_ms, hit_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+);
+const recentUserMessagesForSearchStmt = db.prepare(
+  'SELECT um.id, um.user_id, um.channel_id, um.guild_id, um.content, um.created_at, NULL AS display_name FROM user_messages um WHERE um.user_id = ? ORDER BY um.created_at DESC LIMIT ?'
+);
+const recentChannelMessagesForSearchStmt = db.prepare(`
+  SELECT um.id, um.user_id, um.channel_id, um.guild_id, um.content, um.created_at, gu.display_name
+  FROM user_messages um
+  LEFT JOIN guild_users gu ON um.guild_id = gu.guild_id AND um.user_id = gu.user_id
+  WHERE um.channel_id = ?
+  ORDER BY um.created_at DESC
+  LIMIT ?
+`);
+const recentGuildMessagesForSearchStmt = db.prepare(`
+  SELECT um.id, um.user_id, um.channel_id, um.guild_id, um.content, um.created_at, gu.display_name
+  FROM user_messages um
+  LEFT JOIN guild_users gu ON um.guild_id = gu.guild_id AND um.user_id = gu.user_id
+  WHERE um.guild_id = ?
+  ORDER BY um.created_at DESC
+  LIMIT ?
+`);
+const recentGuildAllowedMessagesForSearchStmt = db.prepare(`
+  SELECT um.id, um.user_id, um.channel_id, um.guild_id, um.content, um.created_at, gu.display_name
+  FROM user_messages um
+  LEFT JOIN guild_users gu ON um.guild_id = gu.guild_id AND um.user_id = gu.user_id
+  WHERE um.guild_id = ?
+    AND um.channel_id IN (SELECT channel_id FROM channel_allowlist WHERE enabled = 1)
+  ORDER BY um.created_at DESC
+  LIMIT ?
+`);
 
 const upsertGuildRoleStmt = db.prepare(`
   INSERT INTO guild_roles (guild_id, role_id, role_name, color, position, permissions)
@@ -750,9 +817,153 @@ export function listChannels() {
   return listChannelsStmt.all();
 }
 
-export function isChannelAllowed(channelId) {
+export function getGuildMemorySettings(guildId) {
+  if (!guildId) {
+    return {
+      guild_id: null,
+      scope_mode: 'allowlist',
+      status_visibility_enabled: 0,
+      updated_at: 0,
+    };
+  }
+  const row = getGuildMemorySettingsStmt.get(guildId);
+  if (row) return row;
+  return {
+    guild_id: guildId,
+    scope_mode: 'allowlist',
+    status_visibility_enabled: 0,
+    updated_at: 0,
+  };
+}
+
+export function setGuildMemoryScope(guildId, scopeMode = 'allowlist') {
+  const current = getGuildMemorySettings(guildId);
+  const safeMode = scopeMode === 'allow_all_visible' ? 'allow_all_visible' : 'allowlist';
+  upsertGuildMemorySettingsStmt.run(
+    guildId,
+    safeMode,
+    current.status_visibility_enabled ? 1 : 0,
+    Date.now()
+  );
+}
+
+export function setGuildStatusVisibility(guildId, enabled) {
+  const current = getGuildMemorySettings(guildId);
+  upsertGuildMemorySettingsStmt.run(
+    guildId,
+    current.scope_mode || 'allowlist',
+    enabled ? 1 : 0,
+    Date.now()
+  );
+}
+
+export function isGuildStatusVisibilityEnabled(guildId) {
+  if (!guildId) return false;
+  const row = getGuildMemorySettingsStmt.get(guildId);
+  return row?.status_visibility_enabled === 1;
+}
+
+export function isChannelAllowed(channelId, guildId = null) {
+  if (guildId) {
+    const guildSettings = getGuildMemorySettings(guildId);
+    if (guildSettings.scope_mode === 'allow_all_visible') {
+      return true;
+    }
+  }
   const row = isChannelAllowedStmt.get(channelId);
   return row?.enabled === 1;
+}
+
+function normalizeSearchTokens(query) {
+  return String(query || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function scoreSearchHit(content, tokens, createdAt) {
+  const text = String(content || '').toLowerCase();
+  if (!text) return 0;
+  let tokenHits = 0;
+  for (const t of tokens) {
+    if (text.includes(t)) tokenHits += 1;
+  }
+  if (!tokenHits) return 0;
+  const recencyHours = Math.max(1, (Date.now() - createdAt) / (1000 * 60 * 60));
+  const recencyBoost = 1 / Math.log2(recencyHours + 2);
+  return tokenHits + recencyBoost;
+}
+
+export function logSearchEvent({
+  userId,
+  guildId = null,
+  mode = 'memory',
+  query = '',
+  provider = 'memory',
+  latencyMs = 0,
+  hitCount = 0,
+}) {
+  insertSearchEventStmt.run(
+    userId,
+    guildId,
+    mode,
+    query,
+    provider,
+    latencyMs,
+    hitCount,
+    Date.now()
+  );
+}
+
+export function searchMemory({
+  guildId = null,
+  channelId = null,
+  userId = null,
+  query = '',
+  scope = 'channel',
+  limit = 6,
+  respectPolicy = true,
+}) {
+  const tokens = normalizeSearchTokens(query);
+  if (!tokens.length) return [];
+  const scanLimit = Math.max(20, Math.min(200, limit * 12));
+  let rows = [];
+  if (scope === 'user' && userId) {
+    rows = recentUserMessagesForSearchStmt.all(userId, scanLimit);
+  } else if (scope === 'guild' && guildId) {
+    const allowAll =
+      !respectPolicy ||
+      getGuildMemorySettings(guildId).scope_mode === 'allow_all_visible';
+    rows = allowAll
+      ? recentGuildMessagesForSearchStmt.all(guildId, scanLimit)
+      : recentGuildAllowedMessagesForSearchStmt.all(guildId, scanLimit);
+  } else if (scope === 'channel' && channelId) {
+    rows = recentChannelMessagesForSearchStmt.all(channelId, scanLimit);
+  } else {
+    return [];
+  }
+
+  return rows
+    .map((row) => ({
+      ...row,
+      score: scoreSearchHit(row.content, tokens, row.created_at),
+    }))
+    .filter((row) => row.score > 0)
+    .sort((a, b) => b.score - a.score || b.created_at - a.created_at)
+    .slice(0, limit)
+    .map((row) => ({
+      id: row.id,
+      user_id: row.user_id,
+      channel_id: row.channel_id,
+      guild_id: row.guild_id,
+      display_name: row.display_name || `User${String(row.user_id).slice(-4)}`,
+      content: row.content,
+      created_at: row.created_at,
+      score: row.score,
+    }));
 }
 
 function recordUserMessageInternal({

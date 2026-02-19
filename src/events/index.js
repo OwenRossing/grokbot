@@ -185,10 +185,13 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
       // Cache guild data
       console.log('Caching guild data...');
       try {
+        const envMode = (process.env.MEMORY_HYDRATE_MODE || '').toLowerCase();
+        const hydrationMode = envMode || (process.env.NODE_ENV === 'development' ? 'light' : 'full');
+        console.log(`Guild hydration mode: ${hydrationMode}`);
         for (const guild of client.guilds.cache.values()) {
-          const result = await cacheGuildOnStartup(guild);
+          const result = await cacheGuildOnStartup(guild, { hydrationMode });
           if (result.success) {
-            console.log(`Cached ${guild.name}: ${result.members} members, ${result.roles} roles`);
+            console.log(`Cached ${guild.name}: ${result.members} members, ${result.roles} roles (${result.hydrationMode || hydrationMode})`);
           } else {
             console.error(`Failed to cache guild ${guild.id}:`, result.error);
           }

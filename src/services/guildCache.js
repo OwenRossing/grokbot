@@ -9,8 +9,9 @@ import {
   upsertGuildUser,
 } from '../memory.js';
 
-export async function cacheGuildOnStartup(guild) {
+export async function cacheGuildOnStartup(guild, options = {}) {
   try {
+    const hydrationMode = options.hydrationMode || 'full';
     await guild.fetch();
     
     upsertGuildMetadata({
@@ -34,23 +35,28 @@ export async function cacheGuildOnStartup(guild) {
       }
     }
 
-    const members = await guild.members.fetch({ limit: 1000 });
-    for (const member of members.values()) {
-      upsertGuildUser({
-        guildId: guild.id,
-        userId: member.user.id,
-        displayName: member.displayName || member.user.username,
-        joinedAt: member.joinedTimestamp || Date.now(),
-      });
+    let memberCount = 0;
+    if (hydrationMode === 'full') {
+      const limit = Number.parseInt(process.env.MEMORY_HYDRATE_MEMBER_LIMIT || '1000', 10);
+      const members = await guild.members.fetch({ limit: Number.isFinite(limit) ? limit : 1000 });
+      memberCount = members.size;
+      for (const member of members.values()) {
+        upsertGuildUser({
+          guildId: guild.id,
+          userId: member.user.id,
+          displayName: member.displayName || member.user.username,
+          joinedAt: member.joinedTimestamp || Date.now(),
+        });
 
-      for (const role of member.roles.cache.values()) {
-        if (role.name !== '@everyone') {
-          upsertMemberRole(guild.id, member.user.id, role.id);
+        for (const role of member.roles.cache.values()) {
+          if (role.name !== '@everyone') {
+            upsertMemberRole(guild.id, member.user.id, role.id);
+          }
         }
       }
     }
     
-    return { success: true, members: members.size, roles: guild.roles.cache.size };
+    return { success: true, members: memberCount, roles: guild.roles.cache.size, hydrationMode };
   } catch (err) {
     return { success: false, error: err.message };
   }
