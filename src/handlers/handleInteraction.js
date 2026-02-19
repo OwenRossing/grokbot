@@ -5,13 +5,6 @@ import {
   executeGifCommand,
   executeMemoryCommand,
   executeLobotomizeCommand,
-  executeMemoryAllowCommand,
-  executeMemoryDenyCommand,
-  executeMemoryListCommand,
-  executeMemoryScopeCommand,
-  executeMemoryResetGuildCommand,
-  executeMemoryResetChannelCommand,
-  executeMemoryResetUserCommand,
   executePurgeCommand,
   executeServerInfoCommand,
   executeMyDataCommand,
@@ -29,12 +22,7 @@ export async function handleInteraction(interaction, { inMemoryTurns, pollTimers
     isSuperAdmin || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
 
   // Commands that require guild context
-  const guildOnlyCommands = [
-    'memory-allow', 'memory-deny', 'memory-list',
-    'memory-scope', 'status',
-    'memory-reset-guild', 'memory-reset-channel', 'memory-reset-user',
-    'purge', 'serverinfo'
-  ];
+  const guildOnlyCommands = ['status', 'purge', 'serverinfo'];
 
   if (guildOnlyCommands.includes(commandName)) {
     if (!interaction.inGuild() && !isSuperAdmin) {
@@ -56,21 +44,7 @@ export async function handleInteraction(interaction, { inMemoryTurns, pollTimers
       case 'gif':
         return await executeGifCommand(interaction);
       case 'memory':
-        return await executeMemoryCommand(interaction);
-      case 'memory-allow':
-        return await executeMemoryAllowCommand(interaction);
-      case 'memory-deny':
-        return await executeMemoryDenyCommand(interaction);
-      case 'memory-list':
-        return await executeMemoryListCommand(interaction);
-      case 'memory-scope':
-        return await executeMemoryScopeCommand(interaction);
-      case 'memory-reset-guild':
-        return await executeMemoryResetGuildCommand(interaction);
-      case 'memory-reset-channel':
-        return await executeMemoryResetChannelCommand(interaction);
-      case 'memory-reset-user':
-        return await executeMemoryResetUserCommand(interaction);
+        return await executeMemoryCommand(interaction, { superAdminId });
       case 'purge':
         return await executePurgeCommand(interaction);
       case 'serverinfo':

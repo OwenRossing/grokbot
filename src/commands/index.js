@@ -66,87 +66,93 @@ export const gifCommand = {
 export const memoryCommand = {
   data: new SlashCommandBuilder()
     .setName('memory')
-    .setDescription('Manage your memory preferences')
+    .setDescription('Manage memory settings and data')
     .setDMPermission(true)
-    .addSubcommand((sub) => sub.setName('on').setDescription('Enable memory'))
-    .addSubcommand((sub) => sub.setName('off').setDescription('Disable memory'))
-    .addSubcommand((sub) => sub.setName('view').setDescription('View stored summary')),
-};
-
-export const memoryAllowCommand = {
-  data: new SlashCommandBuilder()
-    .setName('memory-allow')
-    .setDescription('Allow memory writes in a channel')
-    .setDefaultMemberPermissions(16)
-    .addChannelOption((option) =>
-      option
+    .addSubcommandGroup((group) =>
+      group
+        .setName('user')
+        .setDescription('Manage your own memory')
+        .addSubcommand((sub) => sub.setName('on').setDescription('Enable memory'))
+        .addSubcommand((sub) => sub.setName('off').setDescription('Disable memory'))
+        .addSubcommand((sub) => sub.setName('view').setDescription('View stored summary'))
+        .addSubcommand((sub) => sub.setName('reset').setDescription('Reset your memory'))
+    )
+    .addSubcommandGroup((group) =>
+      group
         .setName('channel')
-        .setDescription('Channel to allow')
-        .setRequired(true)
-    ),
-};
-
-export const memoryDenyCommand = {
-  data: new SlashCommandBuilder()
-    .setName('memory-deny')
-    .setDescription('Deny memory writes in a channel')
-    .setDefaultMemberPermissions(16)
-    .addChannelOption((option) =>
-      option
-        .setName('channel')
-        .setDescription('Channel to deny')
-        .setRequired(true)
-    ),
-};
-
-export const memoryListCommand = {
-  data: new SlashCommandBuilder()
-    .setName('memory-list')
-    .setDescription('List channels with memory permissions')
-    .setDefaultMemberPermissions(16),
-};
-
-export const memoryScopeCommand = {
-  data: new SlashCommandBuilder()
-    .setName('memory-scope')
-    .setDescription('Configure guild memory retrieval scope')
-    .setDefaultMemberPermissions(16)
-    .addStringOption((option) =>
-      option
-        .setName('mode')
-        .setDescription('Memory retrieval scope mode')
-        .setRequired(true)
-        .addChoices(
-          { name: 'Allowlist only', value: 'allowlist' },
-          { name: 'Allow all visible channels', value: 'allow_all_visible' }
+        .setDescription('Manage channel-level memory policies (admin)')
+        .addSubcommand((sub) =>
+          sub
+            .setName('allow')
+            .setDescription('Allow memory writes in a channel')
+            .addChannelOption((option) =>
+              option
+                .setName('channel')
+                .setDescription('Channel to allow')
+                .setRequired(true)
+            )
         )
-    ),
-};
-
-export const memoryResetGuildCommand = {
-  data: new SlashCommandBuilder()
-    .setName('memory-reset-guild')
-    .setDescription('Reset memory for this guild')
-    .setDefaultMemberPermissions(16),
-};
-
-export const memoryResetChannelCommand = {
-  data: new SlashCommandBuilder()
-    .setName('memory-reset-channel')
-    .setDescription('Reset memory for a specific channel')
-    .setDefaultMemberPermissions(16)
-    .addChannelOption((option) =>
-      option.setName('channel').setDescription('Channel to reset').setRequired(true)
-    ),
-};
-
-export const memoryResetUserCommand = {
-  data: new SlashCommandBuilder()
-    .setName('memory-reset-user')
-    .setDescription('Reset memory for a user')
-    .setDefaultMemberPermissions(16)
-    .addUserOption((option) =>
-      option.setName('user').setDescription('User to reset').setRequired(true)
+        .addSubcommand((sub) =>
+          sub
+            .setName('deny')
+            .setDescription('Deny memory writes in a channel')
+            .addChannelOption((option) =>
+              option
+                .setName('channel')
+                .setDescription('Channel to deny')
+                .setRequired(true)
+            )
+        )
+        .addSubcommand((sub) => sub.setName('list').setDescription('List channel memory policies'))
+        .addSubcommand((sub) =>
+          sub
+            .setName('reset')
+            .setDescription('Reset memory for a specific channel')
+            .addChannelOption((option) =>
+              option
+                .setName('channel')
+                .setDescription('Channel to reset')
+                .setRequired(true)
+            )
+        )
+    )
+    .addSubcommandGroup((group) =>
+      group
+        .setName('guild')
+        .setDescription('Manage guild memory settings (admin)')
+        .addSubcommand((sub) =>
+          sub
+            .setName('scope')
+            .setDescription('Configure guild memory retrieval scope')
+            .addStringOption((option) =>
+              option
+                .setName('mode')
+                .setDescription('Memory retrieval scope mode')
+                .setRequired(true)
+                .addChoices(
+                  { name: 'Allowlist only', value: 'allowlist' },
+                  { name: 'Allow all visible channels', value: 'allow_all_visible' }
+                )
+            )
+        )
+        .addSubcommand((sub) => sub.setName('view').setDescription('View guild memory settings'))
+        .addSubcommand((sub) => sub.setName('reset').setDescription('Reset memory for this guild'))
+    )
+    .addSubcommandGroup((group) =>
+      group
+        .setName('admin')
+        .setDescription('Admin memory actions')
+        .addSubcommand((sub) =>
+          sub
+            .setName('reset-user')
+            .setDescription('Reset memory for a user')
+            .addUserOption((option) =>
+              option
+                .setName('user')
+                .setDescription('User to reset')
+                .setRequired(true)
+            )
+        )
     ),
 };
 
@@ -268,13 +274,6 @@ export const commands = [
   pollCommand,
   gifCommand,
   memoryCommand,
-  memoryAllowCommand,
-  memoryDenyCommand,
-  memoryListCommand,
-  memoryScopeCommand,
-  memoryResetGuildCommand,
-  memoryResetChannelCommand,
-  memoryResetUserCommand,
   lobotomizeCommand,
   purgeCommand,
   serverInfoCommand,

@@ -1,4 +1,4 @@
-# GrokBot Discord Assistant
+﻿# GrokBot Discord Assistant
 
 A production-ready Discord bot built with **discord.js v14** and Grok (OpenAI-compatible) chat completions. It supports mentions, slash commands, DMs, per-user memory, and strong anti-abuse controls.
 
@@ -91,35 +91,37 @@ The `ghost` parameter controls message visibility:
 
 
 ### Memory controls
-- `/memory on` — enable memory
-- `/memory off` — disable memory
-- `/memory view` — view the stored summary
+- `/memory user on` — enable memory
+- `/memory user off` — disable memory
+- `/memory user view` — view your stored summary
+- `/memory user reset` — wipe your own memory
 - `/lobotomize` — wipe stored history
-- `/memory-reset-guild` — admin-only: wipe memory for this guild
-- `/memory-reset-user <user>` — admin-only: wipe memory for a user
-- `/memory-reset-channel <channel>` — admin-only: wipe memory for a specific channel
 
 ### Channel allowlist (guild admins)
 Memory starts disabled for all **guild channels**. In allowlisted guild channels, the bot passively records all messages from users who have memory enabled, regardless of whether the bot is mentioned or responds. This provides channel and server context for the bot. Use:
-- `/memory-allow <channel>`
-- `/memory-deny <channel>`
-- `/memory-list` 
-- `/memory-scope <allowlist|allow_all_visible>` (admin)
+- `/memory channel allow <channel>`
+- `/memory channel deny <channel>`
+- `/memory channel list`
+- `/memory channel reset <channel>`
+- `/memory guild scope <allowlist|allow_all_visible>`
+- `/memory guild view`
+- `/memory guild reset`
+- `/memory admin reset-user <user>`
 - `/status <on|off|view>` (admin, controls ephemeral status sidecar)
 
 ### Search
-- `/search memory <query>` — search remembered chat context
-- `/search web <query>` — search the web (provider-based)
-- `/search all <query>` — search both memory and web
+- `/search memory <query>` â€” search remembered chat context
+- `/search web <query>` â€” search the web (provider-based)
+- `/search all <query>` â€” search both memory and web
 
 ### Message management (guild admins)
-- `/purge <timeframe> <channel>` — delete all bot messages in a channel within the specified timeframe (1h, 6h, 12h, 24h, 7d, 30d, or all time)
+- `/purge <timeframe> <channel>` â€” delete all bot messages in a channel within the specified timeframe (1h, 6h, 12h, 24h, 7d, 30d, or all time)
 
 ### DM Support
 The bot works fully in DMs with the same memory and conversation features as in guilds:
 - Use `/ask` to interact with the bot (the `ghost` parameter has no effect in DMs)
 - Direct messages work without needing to mention the bot
-- Memory is enabled by default (can be toggled with `/memory on/off`)
+- Memory is enabled by default (can be toggled with `/memory user on/off`)
 - All conversation history and preferences are preserved
 
 DMs are allowed for memory writes when the user has memory enabled.
@@ -127,7 +129,7 @@ DMs are allowed for memory writes when the user has memory enabled.
 ### Polls
 - Create a poll with mention syntax: reply with `@BotName poll "Question" "A" "B" --duration 2h`
 - Or use `/poll question:"..." options:"A|B|C" duration:1d`
-- Users vote by reacting with 1️⃣ 2️⃣ 3️⃣ ...
+- Users vote by reacting with 1ï¸âƒ£ 2ï¸âƒ£ 3ï¸âƒ£ ...
 - Bot auto-closes at the deadline and posts results.
 
 ### GIFs
@@ -145,3 +147,4 @@ DMs are allowed for memory writes when the user has memory enabled.
 
 ## Data storage
 SQLite is used via `better-sqlite3` and stored in `data.db` in the project root.
+

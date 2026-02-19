@@ -19,7 +19,7 @@ import Database from 'better-sqlite3';
  * 
  * 4. CHANNEL ALLOWLIST:
  *    - channel_allowlist: controls which channels can record memory
- *    - Admins use /memory-allow and /memory-deny to configure
+ *    - Admins use /memory channel allow|deny to configure
  */
 
 export const db = new Database('data.db');

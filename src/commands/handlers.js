@@ -235,20 +235,127 @@ export async function executeGifCommand(interaction) {
   await interaction.editReply({ content: 'Posted your GIF!' });
 }
 
-export async function executeMemoryCommand(interaction) {
+export async function executeMemoryCommand(interaction, { superAdminId } = {}) {
+  const group = interaction.options.getSubcommandGroup(false);
   const sub = interaction.options.getSubcommand();
-  if (sub === 'on') {
-    setUserMemory(interaction.user.id, true);
-    await interaction.reply({ content: 'Memory is on.' });
+  const isSuperAdmin = interaction.user.id === superAdminId;
+  const hasAdminPerms =
+    isSuperAdmin || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
+  const requireAdminGuild = async () => {
+    if (!interaction.inGuild() && !isSuperAdmin) {
+      await interaction.reply({ content: 'Guilds only.', ephemeral: true });
+      return false;
+    }
+    if (!hasAdminPerms) {
+      await interaction.reply({ content: 'Admin only.', ephemeral: true });
+      return false;
+    }
+    return true;
+  };
+
+  if (!group || group === 'user') {
+    if (sub === 'on') {
+      setUserMemory(interaction.user.id, true);
+      await interaction.reply({ content: 'Memory is on.', ephemeral: true });
+      return;
+    }
+    if (sub === 'off') {
+      setUserMemory(interaction.user.id, false);
+      await interaction.reply({ content: 'Memory is off.', ephemeral: true });
+      return;
+    }
+    if (sub === 'view') {
+      const summary = viewMemory(interaction.user.id);
+      await interaction.reply({ content: summary, ephemeral: true });
+      return;
+    }
+    if (sub === 'reset') {
+      forgetUser(interaction.user.id);
+      await interaction.reply({ content: 'Your memory has been reset.', ephemeral: true });
+      return;
+    }
   }
-  if (sub === 'off') {
-    setUserMemory(interaction.user.id, false);
-    await interaction.reply({ content: 'Memory is off.' });
+
+  if (group === 'channel') {
+    if (!await requireAdminGuild()) return;
+    if (sub === 'allow') {
+      const channel = interaction.options.getChannel('channel', true);
+      allowChannel(channel.id);
+      await interaction.reply({ content: `Allowed memory in <#${channel.id}>.` });
+      return;
+    }
+    if (sub === 'deny') {
+      const channel = interaction.options.getChannel('channel', true);
+      denyChannel(channel.id);
+      await interaction.reply({ content: `Denied memory in <#${channel.id}>.` });
+      return;
+    }
+    if (sub === 'list') {
+      const allRows = listChannels();
+      const guild = interaction.guild;
+      const guildChannelIds = new Set(guild.channels.cache.keys());
+      const rows = allRows.filter((row) => guildChannelIds.has(row.channel_id));
+      if (!rows.length) {
+        await interaction.reply({ content: 'No channels configured in this guild.' });
+        return;
+      }
+      const formatted = rows
+        .map((row) => `• <#${row.channel_id}>: ${row.enabled ? 'allowed' : 'denied'}`)
+        .join('\n');
+      await interaction.reply({ content: formatted });
+      return;
+    }
+    if (sub === 'reset') {
+      const channel = interaction.options.getChannel('channel', true);
+      resetChannelMemory(channel.id);
+      await interaction.reply({ content: `Memory reset for <#${channel.id}>.` });
+      return;
+    }
   }
-  if (sub === 'view') {
-    const summary = viewMemory(interaction.user.id);
-    await interaction.reply({ content: summary });
+
+  if (group === 'guild') {
+    if (!await requireAdminGuild()) return;
+    if (sub === 'scope') {
+      const mode = interaction.options.getString('mode', true);
+      const safeMode = mode === 'allow_all_visible' ? 'allow_all_visible' : 'allowlist';
+      setGuildMemoryScope(interaction.guildId, safeMode);
+      const label = safeMode === 'allow_all_visible'
+        ? 'allow all visible channels'
+        : 'allowlist only';
+      await interaction.reply({ content: `Memory scope updated: ${label}.` });
+      return;
+    }
+    if (sub === 'view') {
+      const settings = getGuildMemorySettings(interaction.guildId);
+      const mode = settings?.scope_mode || 'allowlist';
+      await interaction.reply({ content: `Memory scope: ${mode}`, ephemeral: true });
+      return;
+    }
+    if (sub === 'reset') {
+      resetGuildMemory(interaction.guildId);
+      await interaction.reply({ content: 'Guild memory reset.' });
+      return;
+    }
   }
+
+  if (group === 'admin') {
+    if (!await requireAdminGuild()) return;
+    if (sub === 'reset-user') {
+      const user = interaction.options.getUser('user', true);
+      forgetUser(user.id);
+      await interaction.reply({ content: `Memory reset for ${user.username}. This action has been logged.` });
+      try {
+        await user.send(
+          `Your conversation memory and personality profile have been reset by an administrator in ${interaction.guild.name}.`
+        );
+      } catch (dmErr) {
+        console.log(`Could not send DM to user ${user.username} about memory reset:`, dmErr.message);
+      }
+      return;
+    }
+  }
+
+  await interaction.reply({ content: 'Unknown memory action.', ephemeral: true });
 }
 
 export async function executeLobotomizeCommand(interaction) {
