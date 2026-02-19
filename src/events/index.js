@@ -177,10 +177,21 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
       
       // Register commands
       const rest = new REST({ version: '10' }).setToken(config.DISCORD_TOKEN);
+      const commandPayload = commands.map(cmd => cmd.data.toJSON());
       await rest.put(Routes.applicationCommands(client.user.id), {
-        body: commands.map(cmd => cmd.data.toJSON()),
+        body: commandPayload,
       });
-      console.log('Slash commands registered.');
+      for (const guild of client.guilds.cache.values()) {
+        try {
+          await rest.put(
+            Routes.applicationGuildCommands(client.user.id, guild.id),
+            { body: commandPayload }
+          );
+        } catch (err) {
+          console.error(`Failed to register guild commands for ${guild.id}:`, err);
+        }
+      }
+      console.log('Slash commands registered (global + guild).');
 
       // Cache guild data
       console.log('Caching guild data...');
