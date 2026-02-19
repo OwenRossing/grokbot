@@ -68,91 +68,47 @@ export const memoryCommand = {
     .setName('memory')
     .setDescription('Manage memory settings and data')
     .setDMPermission(true)
-    .addSubcommandGroup((group) =>
-      group
-        .setName('user')
-        .setDescription('Manage your own memory')
-        .addSubcommand((sub) => sub.setName('on').setDescription('Enable memory'))
-        .addSubcommand((sub) => sub.setName('off').setDescription('Disable memory'))
-        .addSubcommand((sub) => sub.setName('view').setDescription('View stored summary'))
-        .addSubcommand((sub) => sub.setName('reset').setDescription('Reset your memory'))
+    .addStringOption((option) =>
+      option
+        .setName('action')
+        .setDescription('Memory action to perform')
+        .setRequired(true)
+        .addChoices(
+          { name: 'User: On', value: 'user_on' },
+          { name: 'User: Off', value: 'user_off' },
+          { name: 'User: View', value: 'user_view' },
+          { name: 'User: Reset', value: 'user_reset' },
+          { name: 'Channel: Allow', value: 'channel_allow' },
+          { name: 'Channel: Deny', value: 'channel_deny' },
+          { name: 'Channel: List', value: 'channel_list' },
+          { name: 'Channel: Reset', value: 'channel_reset' },
+          { name: 'Guild: Scope', value: 'guild_scope' },
+          { name: 'Guild: View', value: 'guild_view' },
+          { name: 'Guild: Reset', value: 'guild_reset' },
+          { name: 'Admin: Reset User', value: 'admin_reset_user' }
+        )
     )
-    .addSubcommandGroup((group) =>
-      group
+    .addStringOption((option) =>
+      option
+        .setName('mode')
+        .setDescription('Used with action=guild_scope')
+        .setRequired(false)
+        .addChoices(
+          { name: 'Allowlist only', value: 'allowlist' },
+          { name: 'Allow all visible channels', value: 'allow_all_visible' }
+        )
+    )
+    .addChannelOption((option) =>
+      option
         .setName('channel')
-        .setDescription('Manage channel-level memory policies (admin)')
-        .addSubcommand((sub) =>
-          sub
-            .setName('allow')
-            .setDescription('Allow memory writes in a channel')
-            .addChannelOption((option) =>
-              option
-                .setName('channel')
-                .setDescription('Channel to allow')
-                .setRequired(true)
-            )
-        )
-        .addSubcommand((sub) =>
-          sub
-            .setName('deny')
-            .setDescription('Deny memory writes in a channel')
-            .addChannelOption((option) =>
-              option
-                .setName('channel')
-                .setDescription('Channel to deny')
-                .setRequired(true)
-            )
-        )
-        .addSubcommand((sub) => sub.setName('list').setDescription('List channel memory policies'))
-        .addSubcommand((sub) =>
-          sub
-            .setName('reset')
-            .setDescription('Reset memory for a specific channel')
-            .addChannelOption((option) =>
-              option
-                .setName('channel')
-                .setDescription('Channel to reset')
-                .setRequired(true)
-            )
-        )
+        .setDescription('Used with channel actions')
+        .setRequired(false)
     )
-    .addSubcommandGroup((group) =>
-      group
-        .setName('guild')
-        .setDescription('Manage guild memory settings (admin)')
-        .addSubcommand((sub) =>
-          sub
-            .setName('scope')
-            .setDescription('Configure guild memory retrieval scope')
-            .addStringOption((option) =>
-              option
-                .setName('mode')
-                .setDescription('Memory retrieval scope mode')
-                .setRequired(true)
-                .addChoices(
-                  { name: 'Allowlist only', value: 'allowlist' },
-                  { name: 'Allow all visible channels', value: 'allow_all_visible' }
-                )
-            )
-        )
-        .addSubcommand((sub) => sub.setName('view').setDescription('View guild memory settings'))
-        .addSubcommand((sub) => sub.setName('reset').setDescription('Reset memory for this guild'))
-    )
-    .addSubcommandGroup((group) =>
-      group
-        .setName('admin')
-        .setDescription('Admin memory actions')
-        .addSubcommand((sub) =>
-          sub
-            .setName('reset-user')
-            .setDescription('Reset memory for a user')
-            .addUserOption((option) =>
-              option
-                .setName('user')
-                .setDescription('User to reset')
-                .setRequired(true)
-            )
-        )
+    .addUserOption((option) =>
+      option
+        .setName('user')
+        .setDescription('Used with action=admin_reset_user')
+        .setRequired(false)
     ),
 };
 

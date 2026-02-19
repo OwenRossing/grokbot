@@ -91,22 +91,22 @@ The `ghost` parameter controls message visibility:
 
 
 ### Memory controls
-- `/memory user on` — enable memory
-- `/memory user off` — disable memory
-- `/memory user view` — view your stored summary
-- `/memory user reset` — wipe your own memory
+- `/memory action:user_on` — enable memory
+- `/memory action:user_off` — disable memory
+- `/memory action:user_view` — view your stored summary
+- `/memory action:user_reset` — wipe your own memory
 - `/lobotomize` — wipe stored history
 
 ### Channel allowlist (guild admins)
 Memory starts disabled for all **guild channels**. In allowlisted guild channels, the bot passively records all messages from users who have memory enabled, regardless of whether the bot is mentioned or responds. This provides channel and server context for the bot. Use:
-- `/memory channel allow <channel>`
-- `/memory channel deny <channel>`
-- `/memory channel list`
-- `/memory channel reset <channel>`
-- `/memory guild scope <allowlist|allow_all_visible>`
-- `/memory guild view`
-- `/memory guild reset`
-- `/memory admin reset-user <user>`
+- `/memory action:channel_allow channel:<channel>`
+- `/memory action:channel_deny channel:<channel>`
+- `/memory action:channel_list`
+- `/memory action:channel_reset channel:<channel>`
+- `/memory action:guild_scope mode:<allowlist|allow_all_visible>`
+- `/memory action:guild_view`
+- `/memory action:guild_reset`
+- `/memory action:admin_reset_user user:<user>`
 - `/status <on|off|view>` (admin, controls ephemeral status sidecar)
 
 ### Search
@@ -121,7 +121,7 @@ Memory starts disabled for all **guild channels**. In allowlisted guild channels
 The bot works fully in DMs with the same memory and conversation features as in guilds:
 - Use `/ask` to interact with the bot (the `ghost` parameter has no effect in DMs)
 - Direct messages work without needing to mention the bot
-- Memory is enabled by default (can be toggled with `/memory user on/off`)
+- Memory is enabled by default (can be toggled with `/memory action:user_on` and `/memory action:user_off`)
 - All conversation history and preferences are preserved
 
 DMs are allowed for memory writes when the user has memory enabled.

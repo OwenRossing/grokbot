@@ -236,8 +236,10 @@ export async function executeGifCommand(interaction) {
 }
 
 export async function executeMemoryCommand(interaction, { superAdminId } = {}) {
-  const group = interaction.options.getSubcommandGroup(false);
-  const sub = interaction.options.getSubcommand();
+  const action = interaction.options.getString('action', true);
+  const mode = interaction.options.getString('mode');
+  const channel = interaction.options.getChannel('channel');
+  const user = interaction.options.getUser('user');
   const isSuperAdmin = interaction.user.id === superAdminId;
   const hasAdminPerms =
     isSuperAdmin || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
@@ -253,44 +255,50 @@ export async function executeMemoryCommand(interaction, { superAdminId } = {}) {
     return true;
   };
 
-  if (!group || group === 'user') {
-    if (sub === 'on') {
+  if (action.startsWith('user_')) {
+    if (action === 'user_on') {
       setUserMemory(interaction.user.id, true);
       await interaction.reply({ content: 'Memory is on.', ephemeral: true });
       return;
     }
-    if (sub === 'off') {
+    if (action === 'user_off') {
       setUserMemory(interaction.user.id, false);
       await interaction.reply({ content: 'Memory is off.', ephemeral: true });
       return;
     }
-    if (sub === 'view') {
+    if (action === 'user_view') {
       const summary = viewMemory(interaction.user.id);
       await interaction.reply({ content: summary, ephemeral: true });
       return;
     }
-    if (sub === 'reset') {
+    if (action === 'user_reset') {
       forgetUser(interaction.user.id);
       await interaction.reply({ content: 'Your memory has been reset.', ephemeral: true });
       return;
     }
   }
 
-  if (group === 'channel') {
+  if (action.startsWith('channel_')) {
     if (!await requireAdminGuild()) return;
-    if (sub === 'allow') {
-      const channel = interaction.options.getChannel('channel', true);
+    if (action === 'channel_allow') {
+      if (!channel) {
+        await interaction.reply({ content: 'Provide `channel` for this action.', ephemeral: true });
+        return;
+      }
       allowChannel(channel.id);
       await interaction.reply({ content: `Allowed memory in <#${channel.id}>.` });
       return;
     }
-    if (sub === 'deny') {
-      const channel = interaction.options.getChannel('channel', true);
+    if (action === 'channel_deny') {
+      if (!channel) {
+        await interaction.reply({ content: 'Provide `channel` for this action.', ephemeral: true });
+        return;
+      }
       denyChannel(channel.id);
       await interaction.reply({ content: `Denied memory in <#${channel.id}>.` });
       return;
     }
-    if (sub === 'list') {
+    if (action === 'channel_list') {
       const allRows = listChannels();
       const guild = interaction.guild;
       const guildChannelIds = new Set(guild.channels.cache.keys());
@@ -305,18 +313,24 @@ export async function executeMemoryCommand(interaction, { superAdminId } = {}) {
       await interaction.reply({ content: formatted });
       return;
     }
-    if (sub === 'reset') {
-      const channel = interaction.options.getChannel('channel', true);
+    if (action === 'channel_reset') {
+      if (!channel) {
+        await interaction.reply({ content: 'Provide `channel` for this action.', ephemeral: true });
+        return;
+      }
       resetChannelMemory(channel.id);
       await interaction.reply({ content: `Memory reset for <#${channel.id}>.` });
       return;
     }
   }
 
-  if (group === 'guild') {
+  if (action.startsWith('guild_')) {
     if (!await requireAdminGuild()) return;
-    if (sub === 'scope') {
-      const mode = interaction.options.getString('mode', true);
+    if (action === 'guild_scope') {
+      if (!mode) {
+        await interaction.reply({ content: 'Provide `mode` for this action.', ephemeral: true });
+        return;
+      }
       const safeMode = mode === 'allow_all_visible' ? 'allow_all_visible' : 'allowlist';
       setGuildMemoryScope(interaction.guildId, safeMode);
       const label = safeMode === 'allow_all_visible'
@@ -325,34 +339,35 @@ export async function executeMemoryCommand(interaction, { superAdminId } = {}) {
       await interaction.reply({ content: `Memory scope updated: ${label}.` });
       return;
     }
-    if (sub === 'view') {
+    if (action === 'guild_view') {
       const settings = getGuildMemorySettings(interaction.guildId);
       const mode = settings?.scope_mode || 'allowlist';
       await interaction.reply({ content: `Memory scope: ${mode}`, ephemeral: true });
       return;
     }
-    if (sub === 'reset') {
+    if (action === 'guild_reset') {
       resetGuildMemory(interaction.guildId);
       await interaction.reply({ content: 'Guild memory reset.' });
       return;
     }
   }
 
-  if (group === 'admin') {
+  if (action === 'admin_reset_user') {
     if (!await requireAdminGuild()) return;
-    if (sub === 'reset-user') {
-      const user = interaction.options.getUser('user', true);
-      forgetUser(user.id);
-      await interaction.reply({ content: `Memory reset for ${user.username}. This action has been logged.` });
-      try {
-        await user.send(
-          `Your conversation memory and personality profile have been reset by an administrator in ${interaction.guild.name}.`
-        );
-      } catch (dmErr) {
-        console.log(`Could not send DM to user ${user.username} about memory reset:`, dmErr.message);
-      }
+    if (!user) {
+      await interaction.reply({ content: 'Provide `user` for this action.', ephemeral: true });
       return;
     }
+    forgetUser(user.id);
+    await interaction.reply({ content: `Memory reset for ${user.username}. This action has been logged.` });
+    try {
+      await user.send(
+        `Your conversation memory and personality profile have been reset by an administrator in ${interaction.guild.name}.`
+      );
+    } catch (dmErr) {
+      console.log(`Could not send DM to user ${user.username} about memory reset:`, dmErr.message);
+    }
+    return;
   }
 
   await interaction.reply({ content: 'Unknown memory action.', ephemeral: true });
