@@ -39,6 +39,7 @@ Optional:
 - `BOT_NAME` (default: `GrokBuddy`)
 - `SUPER_ADMIN_USER_ID` (bypasses channel permission checks)
 - `GIPHY_API_KEY` (for `/gif` command)
+- `POKEMONTCG_API_KEY` (optional key for Pokemon TCG API higher limits)
 - `WEB_SEARCH_ENABLED` (`1` to enable automatic web search augmentation)
 - `WEB_SEARCH_PROVIDER` (default: `brave`)
 - `BRAVE_SEARCH_API_KEY` (required for Brave web search)
@@ -83,6 +84,7 @@ Replying to another message with an image also works:
 /ask question: whats good ghost:true    (visible only to you - default)
 /poll question:"Best lunch?" options:"Pizza|Tacos|Sushi" duration:2h
 /gif query:"vibes"
+/tcg action:open_pack set_code:sv1
 ```
 
 The `ghost` parameter controls message visibility:
@@ -134,6 +136,12 @@ DMs are allowed for memory writes when the user has memory enabled.
 
 ### GIFs
 - Search Giphy with `/gif query:"cats"` (requires `GIPHY_API_KEY`)
+
+### Pokemon TCG
+- Open a pack: `/tcg action:open_pack set_code:sv1`
+- View inventory: `/tcg action:inventory`
+- Offer trade: `/tcg action:trade_offer target_user:@User card_instance_ids:ci_x,ci_y`
+- View your trades: `/tcg action:trade_view`
 
 ### Videos
 - Reply to a video with `@BotName` or use `/ask` while replying; the bot will acknowledge video context. Advanced transcription is not enabled by default.

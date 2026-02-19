@@ -225,6 +225,97 @@ export const searchCommand = {
     ),
 };
 
+export const tcgCommand = {
+  data: new SlashCommandBuilder()
+    .setName('tcg')
+    .setDescription('Pokemon TCG pack opening, inventory, and trading')
+    .setDMPermission(true)
+    .addStringOption((option) =>
+      option
+        .setName('action')
+        .setDescription('TCG action')
+        .setRequired(true)
+        .addChoices(
+          { name: 'Open Pack', value: 'open_pack' },
+          { name: 'Inventory', value: 'inventory' },
+          { name: 'Card View', value: 'card_view' },
+          { name: 'Collection Stats', value: 'collection_stats' },
+          { name: 'Trade Offer', value: 'trade_offer' },
+          { name: 'Trade Accept', value: 'trade_accept' },
+          { name: 'Trade Reject', value: 'trade_reject' },
+          { name: 'Trade Cancel', value: 'trade_cancel' },
+          { name: 'Trade View', value: 'trade_view' },
+          { name: 'Market Value', value: 'market_value' },
+          { name: 'Admin Grant Pack', value: 'admin_grant_pack' },
+          { name: 'Admin Grant Credits', value: 'admin_grant_credits' },
+          { name: 'Admin Set Multiplier', value: 'admin_set_multiplier' },
+          { name: 'Admin Trade Lock', value: 'admin_trade_lock' },
+          { name: 'Admin Audit', value: 'admin_audit' },
+          { name: 'Admin Rollback Trade', value: 'admin_rollback_trade' }
+        )
+    )
+    .addStringOption((option) =>
+      option
+        .setName('set_code')
+        .setDescription('Pokemon TCG set code or admin value field')
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('product_code')
+        .setDescription('Pack product code')
+        .setRequired(false)
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName('quantity')
+        .setDescription('Count for admin actions')
+        .setRequired(false)
+    )
+    .addUserOption((option) =>
+      option
+        .setName('target_user')
+        .setDescription('Target user')
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('card_instance_ids')
+        .setDescription('CSV of offered card instance IDs')
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('request_instance_ids')
+        .setDescription('CSV of requested card instance IDs')
+        .setRequired(false)
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName('credits')
+        .setDescription('Credit amount for trade/admin action')
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('trade_id')
+        .setDescription('Trade ID')
+        .setRequired(false)
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName('page')
+        .setDescription('Pagination page')
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('filter')
+        .setDescription('Filter text or admin key toggle')
+        .setRequired(false)
+    ),
+};
+
 export const commands = [
   askCommand,
   pollCommand,
@@ -237,4 +328,5 @@ export const commands = [
   autoreplyCommand,
   statusCommand,
   searchCommand,
+  tcgCommand,
 ];

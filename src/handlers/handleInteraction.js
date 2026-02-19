@@ -12,8 +12,14 @@ import {
   executeStatusCommand,
   executeSearchCommand,
 } from '../commands/handlers.js';
+import { executeTcgCommand, executeTcgTradeButton } from '../commands/tcgHandlers.js';
 
 export async function handleInteraction(interaction, { inMemoryTurns, pollTimers, client, superAdminId }) {
+  if (interaction.isButton()) {
+    const handled = await executeTcgTradeButton(interaction);
+    if (handled) return;
+    return;
+  }
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName } = interaction;
@@ -59,6 +65,8 @@ export async function handleInteraction(interaction, { inMemoryTurns, pollTimers
         return await executeStatusCommand(interaction);
       case 'search':
         return await executeSearchCommand(interaction);
+      case 'tcg':
+        return await executeTcgCommand(interaction, { superAdminId });
       default:
         await interaction.reply({ content: 'Unknown command.', ephemeral: true });
     }
