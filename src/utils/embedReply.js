@@ -74,17 +74,23 @@ export function ensureEmbedPayload(payload, { defaultTitle = 'Response', source 
 }
 
 export function wrapInteractionForEmbedReplies(interaction, { defaultTitle = 'Response' } = {}) {
-  const methodNames = new Set(['reply', 'editReply', 'followUp', 'update']);
+  const methodNames = new Set(['reply', 'editReply', 'followUp', 'update', 'deferReply']);
   return new Proxy(interaction, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
       if (!methodNames.has(String(prop)) || typeof value !== 'function') return value;
       return (...args) => {
         const [payload, ...rest] = args;
-        const normalized = ensureEmbedPayload(payload, {
-          defaultTitle,
-          source: `interaction.${String(prop)}`,
-        });
+        const normalized = String(prop) === 'deferReply'
+          ? (typeof payload === 'object' && payload ? { ...payload } : {})
+          : ensureEmbedPayload(payload, {
+            defaultTitle,
+            source: `interaction.${String(prop)}`,
+          });
+        // Guild UX policy: never hide command output behind ephemeral replies.
+        if (typeof target.inGuild === 'function' && target.inGuild()) {
+          normalized.ephemeral = false;
+        }
         return value.call(target, normalized, ...rest);
       };
     },
@@ -127,4 +133,3 @@ export async function replyEmbed(interactionOrMessage, { embed, components = [],
   }
   throw new Error('replyEmbed target does not support reply()');
 }
-
