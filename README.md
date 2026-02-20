@@ -28,6 +28,11 @@ Copy `.env.example` to `.env` and fill it out:
 cp .env.example .env
 ```
 
+Security note:
+- Never commit `.env`.
+- Keep secrets only in local `.env` (developer machines) or CI secret stores.
+- Run `npm run check:secrets` before pushing to ensure `.env` is not tracked.
+
 Required vars:
 - `DISCORD_TOKEN`
 - `GROK_API_KEY`

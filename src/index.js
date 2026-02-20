@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import fs from 'node:fs';
+import path from 'node:path';
 import { Client, GatewayIntentBits, Partials } from 'discord.js';
 import { setupEvents } from './events/index.js';
 import { setupProcessGuards } from './utils/helpers.js';
@@ -17,6 +19,14 @@ const {
 if (!DISCORD_TOKEN || !GROK_BASE_URL || !GROK_API_KEY) {
   console.error('Missing required env vars: DISCORD_TOKEN, GROK_BASE_URL, GROK_API_KEY');
   process.exit(1);
+}
+
+if (String(process.env.CI || '').toLowerCase() === 'true') {
+  const envPath = path.resolve(process.cwd(), '.env');
+  if (fs.existsSync(envPath)) {
+    console.error('Unsafe CI configuration: .env file exists in CI environment. Use CI secrets and .env.example only.');
+    process.exit(1);
+  }
 }
 
 const client = new Client({

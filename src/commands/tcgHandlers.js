@@ -8,6 +8,15 @@ import {
 import { syncSetFromApi } from '../services/tcg/tcgApi.js';
 import { rollPack, rollPackDetailed } from '../services/tcg/packEngine.js';
 import { renderRevealGif } from '../services/tcg/revealRenderer.js';
+import { getCardEstimatedPrice } from '../services/pricing/pokemonTcgApiPricing.js';
+import {
+  buildCompletionEmbedData,
+  buildPackOpenHeadline,
+} from '../services/tcg/tcgUx.js';
+import {
+  resolveEphemeralVisibility,
+  VisibilityCategory,
+} from '../services/visibilityPolicy.js';
 import {
   browseMarketCatalog,
   createOpenWithMint,
@@ -24,7 +33,6 @@ import {
   getBuyQuote,
   getCardById,
   getCardInstance,
-  getCardValue,
   getDuplicateSummaryForUser,
   getOwnedCardAutocompleteChoices,
   getOwnedInstanceAutocompleteChoices,
@@ -76,9 +84,23 @@ import {
   setRevealSessionMessage,
 } from '../services/tcg/revealSessionStore.js';
 import { hasInteractionAdminAccess } from '../utils/auth.js';
+import {
+  buildPagedEmbed,
+  buildPagerComponents,
+  warnIfPagedWithoutPager,
+} from '../utils/pagination.js';
 
 function money(v) {
   return `$${Number(v || 0).toFixed(2)}`;
+}
+
+function formatEstimatedLine(price) {
+  if (!Number.isFinite(Number(price?.dollars))) return 'Estimated: —';
+  const base = `Estimated: ${money(price.dollars)}${price?.source ? ` (${price.source})` : ''}`;
+  if (Number.isFinite(Number(price?.updatedAt))) {
+    return `${base} • updated <t:${Math.floor(Number(price.updatedAt) / 1000)}:R>`;
+  }
+  return base;
 }
 
 function isVerboseTcgMode() {
@@ -232,10 +254,10 @@ async function buildRevealPayload({ session, user, setCode, rewards, includeValu
     };
   }
 
-  const cardValue = includeValue ? getCardValue(card) : null;
+  const cardEstimated = includeValue ? await getCardEstimatedPrice(card.card_id) : null;
   const fields = [{ name: 'Set Opened', value: setCode, inline: true }];
-  if (cardValue) {
-    fields.unshift({ name: 'Estimated Value', value: `${money(cardValue.valueUsd)} (${cardValue.source})`, inline: true });
+  if (includeValue) {
+    fields.unshift({ name: 'Estimated', value: formatEstimatedLine(cardEstimated), inline: true });
   }
   const embed = new EmbedBuilder()
     .setTitle(`${card.name}`)
@@ -248,7 +270,7 @@ async function buildRevealPayload({ session, user, setCode, rewards, includeValu
         : null,
     ].filter(Boolean).join('\n'))
     .addFields(fields)
-    .setFooter({ text: `Opened by ${user.username}` })
+    .setFooter({ text: `Opened by ${user.username} • Page ${session.current_index + 1}/${session.cards.length}` })
     .setTimestamp(new Date());
 
   const render = renderMedia && shouldRenderRevealGif(card) ? await renderRevealGif(card) : { ok: false };
@@ -261,19 +283,22 @@ async function buildRevealPayload({ session, user, setCode, rewards, includeValu
     embed.setImage(card.image_large || card.image_small);
   }
 
+  const components = buildRevealButtons(session);
+  warnIfPagedWithoutPager({ totalPages: session.cards.length, components, source: 'buildRevealPayload' });
   return {
-    content: `${user} opened a ${setCode} booster.`,
+    content: buildPackOpenHeadline({ openerLabel: String(user), setCode }),
     embeds: [embed],
     files,
-    components: buildRevealButtons(session),
+    components,
   };
 }
 
 async function handleOpenPack(ctx) {
   const { interaction, action, setCode, defaultSetCode, productCode } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.HIGH_NOISE, ctx);
   const effectiveSetCode = normalizeSetCode(setCode || defaultSetCode);
   if (!effectiveSetCode) {
-    await interaction.reply({ content: 'Provide `set_code` (e.g. sv1, swsh12).', ephemeral: false });
+    await interaction.reply({ content: 'Provide `set_code` (e.g. sv1, swsh12).', ephemeral });
     return;
   }
 
@@ -283,13 +308,13 @@ async function handleOpenPack(ctx) {
       const secs = Math.ceil(availability.availableInMs / 1000);
       await interaction.reply({
         content: `Free pack cooldown active. Try again <t:${Math.floor((Date.now() + availability.availableInMs) / 1000)}:R> (${secs}s).`,
-        ephemeral: false,
+        ephemeral,
       });
       return;
     }
   }
 
-  await interaction.deferReply({ ephemeral: false });
+  await interaction.deferReply({ ephemeral });
   let selectedSetCode = effectiveSetCode;
   let fallbackNotice = '';
   try {
@@ -473,6 +498,7 @@ function paginateRows(allRows = [], page = 1, pageSize = 10) {
 function buildPackQueueButtons(
   view,
   page,
+  totalPages,
   {
     showClaimCooldown = false,
     showClaimTop = false,
@@ -504,7 +530,35 @@ function buildPackQueueButtons(
       .setLabel(`Auto-Claim: ${autoClaimEnabled ? 'ON' : 'OFF'}`)
       .setStyle(autoClaimEnabled ? ButtonStyle.Success : ButtonStyle.Secondary)
   );
-  return [row];
+  return [row, ...buildPagerComponents({
+    pageIndex: Math.max(0, Number(page || 1) - 1),
+    totalPages: Math.max(1, Number(totalPages || 1)),
+    baseCustomId: `tcg_pack:page:${view}`,
+  })];
+}
+
+function buildPacksHubEmbed(interaction) {
+  const unopenedCount = listUnopenedPacks(interaction.user.id, 100).length;
+  const availability = getFreePackAvailability(interaction.user.id);
+  const overview = getTcgOverview(interaction.user.id);
+  return new EmbedBuilder()
+    .setTitle('Packs')
+    .setDescription(
+      `Unopened packs: **${unopenedCount}**\n` +
+      `Free pack: **${availability.available ? 'Available now' : `Next free pack <t:${Math.floor(availability.nextAt / 1000)}:R>`}**\n` +
+      `Credits: **${overview.wallet?.credits || 0}**`
+    );
+}
+
+function buildPacksHubButtons() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('tcg_hub:claim').setLabel('Claim').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('tcg_hub:open').setLabel('Open Next').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('tcg_hub:queue').setLabel('Queue').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('tcg_hub:trade_in').setLabel('Trade In').setStyle(ButtonStyle.Secondary),
+    ),
+  ];
 }
 
 async function sendOrEdit(interaction, payload) {
@@ -514,7 +568,46 @@ async function sendOrEdit(interaction, payload) {
   return interaction.reply(payload);
 }
 
+function tcgEphemeral(category, ctx = null, options = {}) {
+  return resolveEphemeralVisibility({
+    category,
+    isPublic: Boolean(ctx?.isPublic),
+    forcePrivate: Boolean(options.forcePrivate),
+  });
+}
+
+const PAGED_VIEW_TTL_MS = 30 * 60 * 1000;
+const pagedViewState = new Map();
+
+function setPagedViewState(messageId, state) {
+  if (!messageId) return;
+  pagedViewState.set(messageId, {
+    ...state,
+    expiresAt: Date.now() + PAGED_VIEW_TTL_MS,
+  });
+}
+
+function getPagedViewState(messageId) {
+  const row = pagedViewState.get(messageId);
+  if (!row) return null;
+  if (Date.now() > Number(row.expiresAt || 0)) {
+    pagedViewState.delete(messageId);
+    return null;
+  }
+  return row;
+}
+
+async function savePagedStateFromInteraction(interaction, state) {
+  try {
+    const sent = await interaction.fetchReply();
+    if (sent?.id) setPagedViewState(sent.id, state);
+  } catch {
+    // Best-effort state for pager buttons.
+  }
+}
+
 async function renderClaimQueue(interaction, { page = 1 } = {}) {
+  const ephemeral = tcgEphemeral(VisibilityCategory.HIGH_NOISE);
   const all = listClaimablePacks(interaction.user.id, 100);
   const pagination = paginateRows(all, page, 10);
   const availability = getFreePackAvailability(interaction.user.id);
@@ -552,22 +645,31 @@ async function renderClaimQueue(interaction, { page = 1 } = {}) {
         inline: false,
       }
     );
+  const { pageLabel } = buildPagedEmbed({
+    title: 'Pack Claim Queue',
+    pages: Array.from({ length: pagination.totalPages }, () => 'page'),
+    pageIndex: pagination.page - 1,
+  });
+  embed.setFooter({ text: pageLabel });
   const topPreview = pagination.rows[0] ? getSetPreviewUrl(pagination.rows[0].set_code) : '';
   if (topPreview) embed.setThumbnail(topPreview);
 
+  const components = buildPackQueueButtons('claim', pagination.page, pagination.totalPages, {
+    showClaimCooldown: availability.available,
+    showClaimTop: pagination.rows.length > 0,
+    autoClaimEnabled: userSettings.auto_claim_enabled,
+  });
+  warnIfPagedWithoutPager({ totalPages: pagination.totalPages, components, source: 'renderClaimQueue' });
   return sendOrEdit(interaction, {
     content: '',
     embeds: [embed],
-    components: buildPackQueueButtons('claim', pagination.page, {
-      showClaimCooldown: availability.available,
-      showClaimTop: pagination.rows.length > 0,
-      autoClaimEnabled: userSettings.auto_claim_enabled,
-    }),
-    ephemeral: false,
+    components,
+    ephemeral,
   });
 }
 
 async function renderOpenQueue(interaction, { page = 1 } = {}) {
+  const ephemeral = tcgEphemeral(VisibilityCategory.HIGH_NOISE);
   const all = listUnopenedPacks(interaction.user.id, 100);
   const pagination = paginateRows(all, page, 10);
   const availability = getFreePackAvailability(interaction.user.id);
@@ -605,28 +707,37 @@ async function renderOpenQueue(interaction, { page = 1 } = {}) {
         inline: false,
       }
     );
+  const { pageLabel } = buildPagedEmbed({
+    title: 'Ready To Open',
+    pages: Array.from({ length: pagination.totalPages }, () => 'page'),
+    pageIndex: pagination.page - 1,
+  });
+  embed.setFooter({ text: pageLabel });
   const topPreview = pagination.rows[0] ? getSetPreviewUrl(pagination.rows[0].set_code) : '';
   if (topPreview) embed.setThumbnail(topPreview);
 
+  const components = buildPackQueueButtons('open', pagination.page, pagination.totalPages, {
+    showOpenTop: pagination.rows.length > 0,
+    autoClaimEnabled: userSettings.auto_claim_enabled,
+  });
+  warnIfPagedWithoutPager({ totalPages: pagination.totalPages, components, source: 'renderOpenQueue' });
   return sendOrEdit(interaction, {
     content: '',
     embeds: [embed],
-    components: buildPackQueueButtons('open', pagination.page, {
-      showOpenTop: pagination.rows.length > 0,
-      autoClaimEnabled: userSettings.auto_claim_enabled,
-    }),
-    ephemeral: false,
+    components,
+    ephemeral,
   });
 }
 
 async function openClaimedPackById(interaction, packId) {
+  const ephemeral = tcgEphemeral(VisibilityCategory.HIGH_NOISE);
   const pack = getClaimablePack(packId, interaction.user.id);
   if (!pack || pack.status !== 'unopened') {
-    await sendOrEdit(interaction, { content: 'Pack not found or already opened.', components: [], ephemeral: false });
+    await sendOrEdit(interaction, { content: 'Pack not found or already opened.', components: [], ephemeral });
     return;
   }
   if (!interaction.deferred && !interaction.replied) {
-    await interaction.deferReply({ ephemeral: false });
+    await interaction.deferReply({ ephemeral });
   }
   await requireSetCached(pack.set_code);
   const drop = rollPackDetailed({
@@ -669,8 +780,9 @@ async function openClaimedPackById(interaction, packId) {
 
 async function handleInventory(ctx) {
   const { interaction, targetUser, page, setCode, filter } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.PRIVATE_INVENTORY, ctx);
   if (targetUser && !isAdminForCtx(ctx)) {
-    await interaction.reply({ content: 'Admin only for viewing other users inventory.', ephemeral: false });
+    await interaction.reply({ content: 'Admin only for viewing other users inventory.', ephemeral });
     return;
   }
   const inv = getInventoryPage({
@@ -680,49 +792,79 @@ async function handleInventory(ctx) {
     setCode,
     nameLike: filter,
   });
+  const titleUser = targetUser ? `${targetUser.username}` : 'You';
   const lines = inv.rows.map((row, idx) =>
     `${idx + 1}. ${row.name} [${row.rarity || 'Unknown'}] (${row.set_code}) • ref ${String(row.instance_id).slice(-6)}`
   );
-  const titleUser = targetUser ? `${targetUser.username}` : 'You';
+  const embed = new EmbedBuilder()
+    .setTitle(`${titleUser} Inventory`)
+    .setDescription(`Page ${inv.page}/${inv.totalPages} • ${inv.total} cards`)
+    .addFields({
+      name: 'Cards',
+      value: lines.join('\n') || 'No cards.',
+      inline: false,
+    });
+  const { pageLabel } = buildPagedEmbed({
+    title: `${titleUser} Inventory`,
+    pages: Array.from({ length: inv.totalPages }, () => 'page'),
+    pageIndex: inv.page - 1,
+  });
+  embed.setFooter({ text: pageLabel });
+  const components = buildPagerComponents({
+    pageIndex: inv.page - 1,
+    totalPages: inv.totalPages,
+    baseCustomId: 'tcg_page:inventory',
+  });
+  warnIfPagedWithoutPager({ totalPages: inv.totalPages, components, source: 'handleInventory' });
   await interaction.reply({
-    content:
-      `${titleUser} inventory page ${inv.page}/${inv.totalPages} (${inv.total} cards)\n` +
-      `${lines.join('\n') || 'No cards.'}`,
-    ephemeral: false,
+    embeds: [embed],
+    components,
+    ephemeral,
+  });
+  await savePagedStateFromInteraction(interaction, {
+    type: 'inventory',
+    page: inv.page,
+    setCode: setCode || '',
+    filter: filter || '',
+    targetUserId: targetUser?.id || '',
+    ephemeral,
+    userId: interaction.user.id,
   });
 }
 
 async function handleCardView(ctx) {
-  const { interaction, csvCards, cardSelection, isPublic } = ctx;
+  const { interaction, csvCards, cardSelection } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.PRIVATE_INVENTORY, ctx);
   const id = cardSelection || parseCsvIds(csvCards)[0];
   if (!id) {
-    await interaction.reply({ content: 'Choose a card from autocomplete, or use advanced `card_instance_ids`.', ephemeral: false });
+    await interaction.reply({ content: 'Choose a card from autocomplete, or use advanced `card_instance_ids`.', ephemeral });
     return;
   }
   const card = getCardInstance(id);
   if (!card) {
-    await interaction.reply({ content: 'Card instance not found.', ephemeral: false });
+    await interaction.reply({ content: 'Card instance not found.', ephemeral });
     return;
   }
   const cardMeta = getCardById(card.card_id) || {};
-  const value = getCardValue(cardMeta?.card_id ? cardMeta : card);
+  const estimated = await getCardEstimatedPrice(card.card_id);
   const embed = new EmbedBuilder()
     .setTitle(card.name || 'Card')
     .setDescription(`Set ${String(card.set_code || '').toUpperCase()} • ${card.rarity || 'Unknown'}`)
     .addFields(
-      { name: 'Value', value: `${money(value.valueUsd)} (${value.source})`, inline: true },
+      { name: 'Estimated', value: formatEstimatedLine(estimated), inline: false },
       { name: 'State', value: card.state || 'owned', inline: true },
       { name: 'Ref', value: String(card.instance_id || '').slice(-8) || 'n/a', inline: true }
     );
   const image = cardMeta.image_large || cardMeta.image_small || '';
   if (image) embed.setImage(image);
-  await interaction.reply({ embeds: [embed], ephemeral: false });
+  await interaction.reply({ embeds: [embed], ephemeral });
 }
 
 async function handleCollectionStats(ctx) {
   const { interaction, targetUser } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.SHAREABLE_STATS, ctx);
   if (targetUser && !isAdminForCtx(ctx)) {
-    await interaction.reply({ content: 'Admin only for viewing other users stats.', ephemeral: false });
+    await interaction.reply({ content: 'Admin only for viewing other users stats.', ephemeral });
     return;
   }
   const overview = getTcgOverview(targetUser?.id || interaction.user.id);
@@ -735,24 +877,25 @@ async function handleCollectionStats(ctx) {
       `Streak: ${overview.wallet.streak_days}\n` +
       `Free pack: ${overview.cooldown.available ? 'ready' : `<t:${Math.floor(overview.cooldown.nextAt / 1000)}:R>`}\n` +
       `Events: ${eventSummary}`,
-    ephemeral: false,
+    ephemeral,
   });
 }
 
 async function handleTradeOffer(ctx) {
   const { interaction, targetUser, csvCards, csvRequestCards, credits, requestCredits } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.HIGH_NOISE, ctx);
   if (!interaction.inGuild()) {
-    await interaction.reply({ content: 'Trade offers are guild-only.', ephemeral: false });
+    await interaction.reply({ content: 'Trade offers are guild-only.', ephemeral });
     return;
   }
   if (!targetUser) {
-    await interaction.reply({ content: 'Provide `target_user`.', ephemeral: false });
+    await interaction.reply({ content: 'Provide `target_user`.', ephemeral });
     return;
   }
   const offerCards = parseCsvIds(csvCards);
   const reqCards = parseCsvIds(csvRequestCards);
   if (!offerCards.length) {
-    await interaction.reply({ content: 'Provide offered `card_instance_ids`.', ephemeral: false });
+    await interaction.reply({ content: 'Provide offered `card_instance_ids`.', ephemeral });
     return;
   }
   const trade = createOffer({
@@ -768,73 +911,79 @@ async function handleTradeOffer(ctx) {
   await interaction.reply({
     content: `${interaction.user} offered a trade to ${targetUser}.\n${summarizeTrade(trade)}`,
     components: buildTradeButtons(trade.trade_id),
-    ephemeral: false,
+    ephemeral,
   });
 }
 
 async function handleTradeAccept(ctx) {
   const { interaction, tradeId } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.HIGH_NOISE, ctx);
   if (!tradeId) {
-    await interaction.reply({ content: 'Provide `trade_id`.', ephemeral: false });
+    await interaction.reply({ content: 'Provide `trade_id`.', ephemeral });
     return;
   }
   const settled = acceptOffer(tradeId, interaction.user.id);
-  await interaction.reply({ content: `Trade settled.\n${summarizeTrade(settled)}`, ephemeral: false });
+  await interaction.reply({ content: `Trade settled.\n${summarizeTrade(settled)}`, ephemeral });
 }
 
 async function handleTradeReject(ctx) {
   const { interaction, tradeId } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.HIGH_NOISE, ctx);
   if (!tradeId) {
-    await interaction.reply({ content: 'Provide `trade_id`.', ephemeral: false });
+    await interaction.reply({ content: 'Provide `trade_id`.', ephemeral });
     return;
   }
   const result = rejectOffer(tradeId, interaction.user.id);
-  await interaction.reply({ content: `Trade rejected.\n${summarizeTrade(result)}`, ephemeral: false });
+  await interaction.reply({ content: `Trade rejected.\n${summarizeTrade(result)}`, ephemeral });
 }
 
 async function handleTradeCancel(ctx) {
   const { interaction, tradeId } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.HIGH_NOISE, ctx);
   if (!tradeId) {
-    await interaction.reply({ content: 'Provide `trade_id`.', ephemeral: false });
+    await interaction.reply({ content: 'Provide `trade_id`.', ephemeral });
     return;
   }
   const result = cancelOffer(tradeId, interaction.user.id);
-  await interaction.reply({ content: `Trade cancelled.\n${summarizeTrade(result)}`, ephemeral: false });
+  await interaction.reply({ content: `Trade cancelled.\n${summarizeTrade(result)}`, ephemeral });
 }
 
 async function handleTradeView(ctx) {
   const { interaction } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.HIGH_NOISE, ctx);
   const trades = listTradesForUser(interaction.user.id);
   if (!trades.length) {
-    await interaction.reply({ content: 'No trades found.', ephemeral: false });
+    await interaction.reply({ content: 'No trades found.', ephemeral });
     return;
   }
   const lines = trades.slice(0, 10).map((t) =>
     `\`${t.trade_id}\` ${t.status} <@${t.offered_by_user_id}> -> <@${t.offered_to_user_id}>`
   );
-  await interaction.reply({ content: lines.join('\n'), ephemeral: false });
+  await interaction.reply({ content: lines.join('\n'), ephemeral });
 }
 
 async function handleMarketValue(ctx) {
   const { interaction, csvCards, cardSelection } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.PRIVATE_INVENTORY, ctx);
   const rawId = cardSelection || parseCsvIds(csvCards)[0];
   if (!rawId) {
-    await interaction.reply({ content: 'Provide `card` (autocomplete) or `card_instance_ids`.', ephemeral: false });
+    await interaction.reply({ content: 'Provide `card` (autocomplete) or `card_instance_ids`.', ephemeral });
     return;
   }
   const instance = getCardInstance(rawId);
   const card = instance || getCardById(rawId);
   if (!card) {
-    await interaction.reply({ content: 'Card not found.', ephemeral: false });
+    await interaction.reply({ content: 'Card not found.', ephemeral });
     return;
   }
-  const value = getCardValue(card);
+  const estimated = await getCardEstimatedPrice(card.card_id || card.cardId || '');
   const name = card.name || card.card_id;
-  await interaction.reply({ content: `${name} value: ${money(value.valueUsd)} (${value.source})`, ephemeral: false });
+  await interaction.reply({ content: `${name} • ${formatEstimatedLine(estimated)}`, ephemeral });
 }
 
 async function handleMarketBrowse(ctx) {
   const { interaction, page, setCode, filter } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.SHAREABLE_STATS, ctx);
   const result = browseMarketCatalog({
     page,
     pageSize: 10,
@@ -853,28 +1002,50 @@ async function handleMarketBrowse(ctx) {
         : 'No listings matched your filter.',
       inline: false,
     });
+  const { pageLabel } = buildPagedEmbed({
+    title: 'Singles Market',
+    pages: Array.from({ length: result.totalPages }, () => 'page'),
+    pageIndex: result.page - 1,
+  });
+  embed.setFooter({ text: pageLabel });
   const firstImage = result.rows[0]?.image_small || result.rows[0]?.image_large || '';
   if (firstImage) embed.setThumbnail(firstImage);
-  await interaction.reply({ embeds: [embed], ephemeral: false });
+  const components = buildPagerComponents({
+    pageIndex: result.page - 1,
+    totalPages: result.totalPages,
+    baseCustomId: 'tcg_page:market_browse',
+  });
+  warnIfPagedWithoutPager({ totalPages: result.totalPages, components, source: 'handleMarketBrowse' });
+  await interaction.reply({ embeds: [embed], components, ephemeral });
+  await savePagedStateFromInteraction(interaction, {
+    type: 'market_browse',
+    page: result.page,
+    setCode: setCode || '',
+    filter: filter || '',
+    ephemeral,
+    userId: interaction.user.id,
+  });
 }
 
 async function handleMarketQuoteBuy(ctx) {
   const { interaction, cardId, quantity } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.PRIVATE_INVENTORY, ctx);
   if (!cardId) {
-    await interaction.reply({ content: 'Provide `card_id`.', ephemeral: false });
+    await interaction.reply({ content: 'Provide `card_id`.', ephemeral });
     return;
   }
   const quote = getBuyQuote(cardId, quantity);
   await interaction.reply({
     content: `Buy quote: ${quote.quantity}x ${quote.cardName} at ${quote.unitPriceCredits} each = ${quote.totalCredits} credits.`,
-    ephemeral: false,
+    ephemeral,
   });
 }
 
 async function handleMarketBuy(ctx) {
   const { interaction, cardId, quantity } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.PRIVATE_INVENTORY, ctx);
   if (!cardId) {
-    await interaction.reply({ content: 'Provide `card_id`.', ephemeral: false });
+    await interaction.reply({ content: 'Provide `card_id`.', ephemeral });
     return;
   }
   const purchase = executeMarketBuy({
@@ -885,12 +1056,13 @@ async function handleMarketBuy(ctx) {
   });
   await interaction.reply({
     content: `Bought ${purchase.quantity}x ${purchase.cardName} for ${purchase.totalCredits} credits.`,
-    ephemeral: false,
+    ephemeral,
   });
 }
 
 async function handleMarketQuoteSell(ctx) {
   const { interaction, csvCards, cardSelection, quantity } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.PRIVATE_INVENTORY, ctx);
   if (cardSelection) {
     const resolved = resolveOwnedInstanceIdsForSelection(interaction.user.id, cardSelection, quantity || 1);
     const quote = getSellQuoteForInstances(interaction.user.id, resolved.instanceIds);
@@ -898,24 +1070,25 @@ async function handleMarketQuoteSell(ctx) {
       content:
         `Sell quote: ${quote.quantity}x ${resolved.cardName} for ${quote.totalCredits} credits total.\n` +
         `(You own ${resolved.availableCount} copy/copies.)`,
-      ephemeral: false,
+      ephemeral,
     });
     return;
   }
   const ids = parseCsvIds(csvCards);
   if (!ids.length) {
-    await interaction.reply({ content: 'Provide `card` (autocomplete) or `card_instance_ids`.', ephemeral: false });
+    await interaction.reply({ content: 'Provide `card` (autocomplete) or `card_instance_ids`.', ephemeral });
     return;
   }
   const quote = getSellQuoteForInstances(interaction.user.id, ids);
   await interaction.reply({
     content: `Sell quote: ${quote.quantity} card(s) for ${quote.totalCredits} credits total.`,
-    ephemeral: false,
+    ephemeral,
   });
 }
 
 async function handleMarketSell(ctx) {
   const { interaction, csvCards, cardSelection, quantity } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.PRIVATE_INVENTORY, ctx);
   if (cardSelection) {
     const resolved = resolveOwnedInstanceIdsForSelection(interaction.user.id, cardSelection, quantity || 1);
     const sold = executeMarketSellInstances({ userId: interaction.user.id, instanceIds: resolved.instanceIds });
@@ -923,24 +1096,25 @@ async function handleMarketSell(ctx) {
       content:
         `Sold ${sold.quantity}x ${resolved.cardName} for ${sold.totalCredits} credits.\n` +
         `(You had ${resolved.availableCount} copy/copies.)`,
-      ephemeral: false,
+      ephemeral,
     });
     return;
   }
   const ids = parseCsvIds(csvCards);
   if (!ids.length) {
-    await interaction.reply({ content: 'Provide `card` (autocomplete) or `card_instance_ids`.', ephemeral: false });
+    await interaction.reply({ content: 'Provide `card` (autocomplete) or `card_instance_ids`.', ephemeral });
     return;
   }
   const sold = executeMarketSellInstances({ userId: interaction.user.id, instanceIds: ids });
   await interaction.reply({
     content: `Sold ${sold.quantity} card(s) for ${sold.totalCredits} credits.`,
-    ephemeral: false,
+    ephemeral,
   });
 }
 
 async function handleMarketSellDuplicates(ctx) {
   const { interaction, keepPerCard, maxTier, credits, confirm } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.PRIVATE_INVENTORY, ctx);
   if (String(confirm || '').toLowerCase() !== 'yes') {
     const duplicates = getDuplicateSummaryForUser(interaction.user.id, keepPerCard);
     const preview = duplicates.slice(0, 10).map((row) =>
@@ -950,7 +1124,7 @@ async function handleMarketSellDuplicates(ctx) {
       content:
         `Preview only. Use \`confirm:yes\` to execute.\n` +
         `${preview || 'No duplicates found.'}`,
-      ephemeral: false,
+      ephemeral,
     });
     return;
   }
@@ -962,7 +1136,7 @@ async function handleMarketSellDuplicates(ctx) {
   });
   await interaction.reply({
     content: `Auto-sold ${sold.quantity} duplicate card(s) for ${sold.totalCredits} credits.`,
-    ephemeral: false,
+    ephemeral,
   });
 }
 
@@ -974,22 +1148,24 @@ function requireAdmin(ctx) {
 
 async function handleAdminGrantPack(ctx) {
   const { interaction, targetUser, setCode, productCode } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.ADMIN_CONTROL, ctx);
   requireAdmin(ctx);
   if (!targetUser || !setCode) {
-    await interaction.reply({ content: 'Provide `target_user` and `set_code`.', ephemeral: false });
+    await interaction.reply({ content: 'Provide `target_user` and `set_code`.', ephemeral });
     return;
   }
   await requireSetCached(setCode);
   const pulls = rollPack({ setCode, productCode: productCode || `${setCode}-default` });
   const minted = grantAdminCards(interaction.user.id, targetUser.id, pulls.map((p) => p.card_id), 'admin_pack_grant');
-  await interaction.reply({ content: `Granted ${minted.length} cards to ${targetUser}.`, ephemeral: false });
+  await interaction.reply({ content: `Granted ${minted.length} cards to ${targetUser}.`, ephemeral });
 }
 
 async function handleAdminGrantSealedPack(ctx) {
   const { interaction, targetUser, setCode, productCode, quantity } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.ADMIN_CONTROL, ctx);
   requireAdmin(ctx);
   if (!targetUser || !setCode) {
-    await interaction.reply({ content: 'Provide `target_user` and `set_code`.', ephemeral: false });
+    await interaction.reply({ content: 'Provide `target_user` and `set_code`.', ephemeral });
     return;
   }
   await requireSetCached(setCode);
@@ -1003,57 +1179,62 @@ async function handleAdminGrantSealedPack(ctx) {
     content:
       `Granted ${granted.length} unopened pack(s) to ${targetUser}.\n` +
       (preview ? `Pack IDs: ${preview}${granted.length > 5 ? ', ...' : ''}` : ''),
-    ephemeral: false,
+    ephemeral,
   });
 }
 
 async function handleAdminGrantCredits(ctx) {
   const { interaction, targetUser, credits } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.ADMIN_CONTROL, ctx);
   requireAdmin(ctx);
   if (!targetUser || !credits) {
-    await interaction.reply({ content: 'Provide `target_user` and non-zero `credits`.', ephemeral: false });
+    await interaction.reply({ content: 'Provide `target_user` and non-zero `credits`.', ephemeral });
     return;
   }
   const wallet = grantAdminCredits(interaction.user.id, targetUser.id, credits, 'admin_grant_credits');
-  await interaction.reply({ content: `Updated ${targetUser} credits: ${wallet.credits}.`, ephemeral: false });
+  await interaction.reply({ content: `Updated ${targetUser} credits: ${wallet.credits}.`, ephemeral });
 }
 
 async function handleAdminSetMultiplier(ctx) {
   const { interaction, key, value } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.ADMIN_CONTROL, ctx);
   requireAdmin(ctx);
   if (!key || !value) {
-    await interaction.reply({ content: 'Use `key` and `value` (e.g. key=credit_multiplier, value=1.5).', ephemeral: false });
+    await interaction.reply({ content: 'Use `key` and `value` (e.g. key=credit_multiplier, value=1.5).', ephemeral });
     return;
   }
   setAdminMultiplier(interaction.user.id, key, value);
-  await interaction.reply({ content: `Multiplier updated: ${key}=${value}.`, ephemeral: false });
+  await interaction.reply({ content: `Multiplier updated: ${key}=${value}.`, ephemeral });
 }
 
 async function handleAdminTradeLock(ctx) {
   const { interaction, filter } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.ADMIN_CONTROL, ctx);
   requireAdmin(ctx);
   const enabled = String(filter || '').toLowerCase() === 'on' || String(filter || '').toLowerCase() === 'true';
   setTradeLocked(interaction.user.id, enabled);
-  await interaction.reply({ content: `Trading lock is now ${enabled ? 'ON' : 'OFF'}.`, ephemeral: false });
+  await interaction.reply({ content: `Trading lock is now ${enabled ? 'ON' : 'OFF'}.`, ephemeral });
 }
 
 async function handleAdminAudit(ctx) {
   const { interaction, quantity } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.ADMIN_CONTROL, ctx);
   requireAdmin(ctx);
   const rows = listAdminEvents(Math.max(1, Math.min(50, quantity || 20)));
   const lines = rows.map((r) => `\`${r.event_id}\` ${r.action} by <@${r.admin_user_id}> at <t:${Math.floor(r.created_at / 1000)}:R>`);
-  await interaction.reply({ content: lines.join('\n') || 'No admin events.', ephemeral: false });
+  await interaction.reply({ content: lines.join('\n') || 'No admin events.', ephemeral });
 }
 
 async function handleAdminRollbackTrade(ctx) {
   const { interaction, tradeId } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.ADMIN_CONTROL, ctx);
   requireAdmin(ctx);
   if (!tradeId) {
-    await interaction.reply({ content: 'Provide `trade_id`.', ephemeral: false });
+    await interaction.reply({ content: 'Provide `trade_id`.', ephemeral });
     return;
   }
   const rolled = rollbackSettledTrade(interaction.user.id, tradeId);
-  await interaction.reply({ content: `Trade rolled back.\n${summarizeTrade(rolled)}`, ephemeral: false });
+  await interaction.reply({ content: `Trade rolled back.\n${summarizeTrade(rolled)}`, ephemeral });
 }
 
 function formatEventTime(ts) {
@@ -1072,6 +1253,7 @@ async function handleAdminEventCreate(ctx) {
     endUnix,
     eventEnabled,
   } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.ADMIN_CONTROL, ctx);
   requireAdmin(ctx);
   const created = createLiveEvent(interaction.user.id, {
     name: eventName,
@@ -1090,56 +1272,61 @@ async function handleAdminEventCreate(ctx) {
       `Status: ${created.status}\n` +
       `Start: ${formatEventTime(created.start_at)}\n` +
       `End: ${formatEventTime(created.end_at)}`,
-    ephemeral: false,
+    ephemeral,
   });
 }
 
 async function handleAdminEventList(ctx) {
   const { interaction, eventStatus, quantity } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.ADMIN_CONTROL, ctx);
   requireAdmin(ctx);
   const rows = listLiveEvents({ status: eventStatus || 'all', limit: Math.max(1, Math.min(100, quantity || 20)) });
   const lines = rows.map((row) =>
     `\`${row.event_id}\` ${row.name} • ${row.effect_type}=${row.effect_value} • ${row.status} • ${row.set_scope ? row.set_scope.toUpperCase() : 'GLOBAL'} • <t:${Math.floor(row.end_at / 1000)}:R>`
   );
-  await interaction.reply({ content: lines.join('\n') || 'No live events.', ephemeral: false });
+  await interaction.reply({ content: lines.join('\n') || 'No live events.', ephemeral });
 }
 
 async function handleAdminEventEnable(ctx) {
   const { interaction, eventId } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.ADMIN_CONTROL, ctx);
   requireAdmin(ctx);
   const updated = setLiveEventStatus(interaction.user.id, eventId, 'active');
   await interaction.reply({
     content: `Event enabled: \`${updated.event_id}\` (${updated.name}) now ${updated.status}.`,
-    ephemeral: false,
+    ephemeral,
   });
 }
 
 async function handleAdminEventDisable(ctx) {
   const { interaction, eventId } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.ADMIN_CONTROL, ctx);
   requireAdmin(ctx);
   const updated = setLiveEventStatus(interaction.user.id, eventId, 'disabled');
   await interaction.reply({
     content: `Event disabled: \`${updated.event_id}\` (${updated.name}).`,
-    ephemeral: false,
+    ephemeral,
   });
 }
 
 async function handleAdminEventDelete(ctx) {
   const { interaction, eventId } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.ADMIN_CONTROL, ctx);
   requireAdmin(ctx);
   deleteLiveEvent(interaction.user.id, eventId);
-  await interaction.reply({ content: `Deleted event \`${eventId}\`.`, ephemeral: false });
+  await interaction.reply({ content: `Deleted event \`${eventId}\`.`, ephemeral });
 }
 
 async function handleAdminEventNow(ctx) {
   const { interaction, eventId, eventMode } = ctx;
+  const ephemeral = tcgEphemeral(VisibilityCategory.ADMIN_CONTROL, ctx);
   requireAdmin(ctx);
   if (eventMode === 'start_now') {
     setLiveEventNow(interaction.user.id, eventId, 'start_now');
     const activated = activateDueLiveEvents(interaction.user.id);
     await interaction.reply({
       content: `Start-now applied for \`${eventId}\`. Activated events in this tick: ${activated}.`,
-      ephemeral: false,
+      ephemeral,
     });
     return;
   }
@@ -1148,11 +1335,11 @@ async function handleAdminEventNow(ctx) {
     const expired = expireEndedLiveEvents(interaction.user.id);
     await interaction.reply({
       content: `Stop-now applied for \`${eventId}\`. Auto-expired events in this tick: ${expired}.`,
-      ephemeral: false,
+      ephemeral,
     });
     return;
   }
-  await interaction.reply({ content: 'Use mode: start_now or stop_now.', ephemeral: false });
+  await interaction.reply({ content: 'Use mode: start_now or stop_now.', ephemeral });
 }
 
 function safeOption(interaction, kind, name, fallback) {
@@ -1215,10 +1402,13 @@ async function safeExecuteTcg(interaction, run, label) {
       error: err?.message || String(err),
     });
     const message = err.message === 'Admin only.' ? 'Admin only.' : `TCG command failed: ${err.message}`;
+    const isAdminError = err.message === 'Admin only.';
+    const category = isAdminError ? VisibilityCategory.ADMIN_CONTROL : VisibilityCategory.HIGH_NOISE;
+    const ephemeral = tcgEphemeral(category);
     if (interaction.deferred || interaction.replied) {
-      await interaction.followUp({ content: message, ephemeral: false });
+      await interaction.followUp({ content: message, ephemeral });
     } else {
-      await interaction.reply({ content: message, ephemeral: false });
+      await interaction.reply({ content: message, ephemeral });
     }
   }
 }
@@ -1251,9 +1441,10 @@ export async function executeViewUnopenedPacksCommand(interaction, { superAdminI
 export async function executeViewPackCompletionCommand(interaction, { superAdminId } = {}) {
   await safeExecuteTcg(interaction, async () => {
     const ctx = buildCommandCtx(interaction, superAdminId);
+    const ephemeral = tcgEphemeral(VisibilityCategory.SHAREABLE_STATS, ctx);
     const requestedSetCode = normalizeSetCode(ctx.packSelection || ctx.setCode || '');
     if (!requestedSetCode) {
-      await interaction.reply({ content: 'Provide a pack/set via `pack`.', ephemeral: false });
+      await interaction.reply({ content: 'Provide a pack/set via `pack`.', ephemeral });
       return;
     }
 
@@ -1264,7 +1455,7 @@ export async function executeViewPackCompletionCommand(interaction, { superAdmin
       if (isTransientSetSyncError(err) && getCardsBySet(requestedSetCode).length > 0) {
         console.warn(`Using cached set data for ${requestedSetCode} due to API outage:`, err.message);
       } else if (setErr) {
-        await interaction.reply({ content: setErr, ephemeral: false });
+        await interaction.reply({ content: setErr, ephemeral });
         return;
       } else {
         throw err;
@@ -1275,81 +1466,34 @@ export async function executeViewPackCompletionCommand(interaction, { superAdmin
     if (!completion.total) {
       await interaction.reply({
         content: `No cards cached for set \`${requestedSetCode}\` yet. Try opening/claiming from that set first.`,
-        ephemeral: false,
+        ephemeral,
       });
       return;
     }
 
-    const progressSlots = 10;
-    const filled = Math.max(0, Math.min(progressSlots, Math.round((completion.ownedUnique / completion.total) * progressSlots)));
-    const progressBar = `${'█'.repeat(filled)}${'░'.repeat(Math.max(0, progressSlots - filled))}`;
-    const missingPreview = completion.missing
-      .slice(0, 12)
-      .map((row) => `• ${row.name}`)
-      .join('\n');
-    const dupPreview = completion.duplicates
-      .slice(0, 8)
-      .map((row) => `• ${row.name} x${row.owned_count}`)
-      .join('\n');
-
+    const ui = buildCompletionEmbedData(completion);
     const embed = new EmbedBuilder()
-      .setTitle(`${completion.setName} Completion`)
-      .setDescription(
-        `Set: **${completion.setCode.toUpperCase()}**\n` +
-        `Completion: **${completion.ownedUnique}/${completion.total}** (${completion.completionPct.toFixed(1)}%)\n` +
-        `${progressBar}`
-      )
-      .addFields(
-        {
-          name: 'Owned Unique',
-          value: `${completion.ownedUnique}`,
-          inline: true,
-        },
-        {
-          name: 'Missing',
-          value: `${completion.missingCount}`,
-          inline: true,
-        },
-        {
-          name: 'Duplicates',
-          value: `${completion.duplicates.length}`,
-          inline: true,
-        },
-        {
-          name: 'Missing Preview',
-          value: missingPreview || 'No missing cards. Set complete.',
-          inline: false,
-        },
-        {
-          name: 'Duplicate Preview',
-          value: dupPreview || 'No duplicates yet.',
-          inline: false,
-        }
-      );
-    const featuredCard = completion.missing[0] || completion.rows.find((row) => Number(row.owned_count || 0) > 0) || null;
-    if (featuredCard) {
-      const featuredImage = featuredCard.image_large || featuredCard.image_small || '';
-      if (featuredImage) embed.setImage(featuredImage);
-      embed.addFields({
-        name: 'Featured Card',
-        value: `${featuredCard.name} (${Number(featuredCard.owned_count || 0) > 0 ? 'Owned' : 'Missing'})`,
-        inline: false,
-      });
+      .setTitle(ui.title)
+      .setDescription(ui.description)
+      .addFields(ui.fields);
+    if (ui.featuredImageUrl) {
+      embed.setImage(ui.featuredImageUrl);
     }
     const preview = getSetPreviewUrl(completion.setCode);
     if (preview) embed.setThumbnail(preview);
-    await interaction.reply({ embeds: [embed], ephemeral: false });
+    await interaction.reply({ embeds: [embed], ephemeral });
   }, 'view-pack-completion');
 }
 
 export async function executeAutoClaimPackCommand(interaction) {
   await safeExecuteTcg(interaction, async () => {
+    const ephemeral = tcgEphemeral(VisibilityCategory.HIGH_NOISE);
     const mode = String(safeOption(interaction, 'getString', 'mode', 'status') || 'status').toLowerCase();
     if (mode === 'status') {
       const settings = getTcgUserSettings(interaction.user.id);
       await interaction.reply({
         content: `Auto-claim is ${settings.auto_claim_enabled ? 'ON' : 'OFF'}.`,
-        ephemeral: false,
+        ephemeral,
       });
       return;
     }
@@ -1357,11 +1501,11 @@ export async function executeAutoClaimPackCommand(interaction) {
       const updated = setAutoClaimEnabled(interaction.user.id, mode === 'on');
       await interaction.reply({
         content: `Auto-claim is now ${updated.auto_claim_enabled ? 'ON' : 'OFF'}.`,
-        ephemeral: false,
+        ephemeral,
       });
       return;
     }
-    await interaction.reply({ content: 'Use mode: on, off, or status.', ephemeral: false });
+    await interaction.reply({ content: 'Use mode: on, off, or status.', ephemeral });
   }, 'auto-claim-pack');
 }
 
@@ -1447,6 +1591,17 @@ export async function executeAdminRollbackTradeCommand(interaction, { superAdmin
   await safeExecuteTcg(interaction, async () => handleAdminRollbackTrade(buildCommandCtx(interaction, superAdminId)), 'admin-rollback-trade');
 }
 
+export async function executePacksCommand(interaction) {
+  await safeExecuteTcg(interaction, async () => {
+    const embed = buildPacksHubEmbed(interaction);
+    await interaction.reply({
+      embeds: [embed],
+      components: buildPacksHubButtons(),
+      ephemeral: false,
+    });
+  }, 'packs');
+}
+
 export async function executeTcgAutocomplete(interaction) {
   const commandName = String(interaction.commandName || '');
   const focused = interaction.options.getFocused(true);
@@ -1498,14 +1653,162 @@ export async function executeTcgAutocomplete(interaction) {
   return false;
 }
 
+export async function executeTcgPageButton(interaction, { superAdminId } = {}) {
+  const [prefix, scope, direction, rawPageIndex] = String(interaction.customId || '').split(':');
+  if (prefix !== 'tcg_page') return false;
+  const delta = direction === 'next' ? 1 : -1;
+  const currentPage = Math.max(1, Number(rawPageIndex || 0) + 1);
+  const nextPage = Math.max(1, currentPage + delta);
+  const state = getPagedViewState(interaction.message?.id);
+  if (!state || state.userId !== interaction.user.id) {
+    await interaction.reply({ content: 'Pagination state expired. Run the command again.', ephemeral: true });
+    return true;
+  }
+
+  if (scope === 'inventory' && state.type === 'inventory') {
+    const inv = getInventoryPage({
+      userId: state.targetUserId || interaction.user.id,
+      page: nextPage,
+      pageSize: 10,
+      setCode: state.setCode || '',
+      nameLike: state.filter || '',
+    });
+    const titleUser = state.targetUserId ? `<@${state.targetUserId}>` : 'You';
+    const lines = inv.rows.map((row, idx) =>
+      `${idx + 1}. ${row.name} [${row.rarity || 'Unknown'}] (${row.set_code}) • ref ${String(row.instance_id).slice(-6)}`
+    );
+    const embed = new EmbedBuilder()
+      .setTitle(`${titleUser} Inventory`)
+      .setDescription(`Page ${inv.page}/${inv.totalPages} • ${inv.total} cards`)
+      .addFields({ name: 'Cards', value: lines.join('\n') || 'No cards.', inline: false });
+    const invPage = buildPagedEmbed({
+      title: `${titleUser} Inventory`,
+      pages: Array.from({ length: inv.totalPages }, () => 'page'),
+      pageIndex: inv.page - 1,
+    });
+    embed.setFooter({ text: invPage.pageLabel });
+    const components = buildPagerComponents({
+      pageIndex: inv.page - 1,
+      totalPages: inv.totalPages,
+      baseCustomId: 'tcg_page:inventory',
+    });
+    await interaction.update({ embeds: [embed], components, content: '' });
+    setPagedViewState(interaction.message?.id, { ...state, page: inv.page });
+    return true;
+  }
+
+  if (scope === 'market_browse' && state.type === 'market_browse') {
+    const result = browseMarketCatalog({
+      page: nextPage,
+      pageSize: 10,
+      setCode: state.setCode || '',
+      nameLike: state.filter || '',
+    });
+    const embed = new EmbedBuilder()
+      .setTitle('Singles Market')
+      .setDescription(`Page ${result.page}/${result.totalPages} • ${result.total} cards listed`)
+      .addFields({
+        name: 'Listings',
+        value: result.rows.length
+          ? result.rows.map((row, idx) =>
+            `${idx + 1}. \`${row.card_id}\` ${row.name} (${row.set_code.toUpperCase()}) • buy ${row.buy_price_credits} • sell ${row.sell_price_credits}`
+          ).join('\n')
+          : 'No listings matched your filter.',
+        inline: false,
+      });
+    const marketPage = buildPagedEmbed({
+      title: 'Singles Market',
+      pages: Array.from({ length: result.totalPages }, () => 'page'),
+      pageIndex: result.page - 1,
+    });
+    embed.setFooter({ text: marketPage.pageLabel });
+    const firstImage = result.rows[0]?.image_small || result.rows[0]?.image_large || '';
+    if (firstImage) embed.setThumbnail(firstImage);
+    const components = buildPagerComponents({
+      pageIndex: result.page - 1,
+      totalPages: result.totalPages,
+      baseCustomId: 'tcg_page:market_browse',
+    });
+    await interaction.update({ embeds: [embed], components, content: '' });
+    setPagedViewState(interaction.message?.id, { ...state, page: result.page });
+    return true;
+  }
+
+  await interaction.reply({ content: 'Unknown pager view.', ephemeral: true });
+  return true;
+}
+
+export async function executeTcgHubButton(interaction) {
+  const [prefix, action] = String(interaction.customId || '').split(':');
+  if (prefix !== 'tcg_hub') return false;
+
+  try {
+    if (action === 'queue') {
+      await interaction.deferUpdate();
+      await renderOpenQueue(interaction, { page: 1 });
+      return true;
+    }
+    if (action === 'trade_in') {
+      await interaction.update({
+        content: '',
+        embeds: [
+          new EmbedBuilder()
+            .setTitle('Trade In')
+            .setDescription('Coming soon.'),
+        ],
+        components: buildPacksHubButtons(),
+      });
+      return true;
+    }
+    if (action === 'claim') {
+      const top = listClaimablePacks(interaction.user.id, 1)[0];
+      if (top) {
+        claimPack(top.pack_id, interaction.user.id);
+      } else {
+        try {
+          claimCooldownPack(interaction.user.id);
+        } catch {
+          // no-op: hub will show current state.
+        }
+      }
+      await interaction.update({
+        content: '',
+        embeds: [buildPacksHubEmbed(interaction)],
+        components: buildPacksHubButtons(),
+      });
+      return true;
+    }
+    if (action === 'open') {
+      const top = listUnopenedPacks(interaction.user.id, 1)[0];
+      if (!top) {
+        await interaction.update({
+          content: '',
+          embeds: [buildPacksHubEmbed(interaction)],
+          components: buildPacksHubButtons(),
+        });
+        return true;
+      }
+      await interaction.deferUpdate();
+      await openClaimedPackById(interaction, top.pack_id);
+      return true;
+    }
+  } catch (err) {
+    await interaction.reply({ content: `Hub action failed: ${err.message}`, ephemeral: true });
+    return true;
+  }
+
+  return false;
+}
+
 export async function executeTcgTradeButton(interaction) {
   const [prefix, action, tradeId] = String(interaction.customId || '').split(':');
   if (prefix !== 'tcg_trade' || !tradeId) return false;
+  const ephemeral = tcgEphemeral(VisibilityCategory.HIGH_NOISE);
 
   try {
     const trade = getTradeWithExpiry(tradeId);
     if (!trade) {
-      await interaction.reply({ content: 'Trade not found.', ephemeral: false });
+      await interaction.reply({ content: 'Trade not found.', ephemeral });
       return true;
     }
     if (action === 'accept') {
@@ -1518,7 +1821,7 @@ export async function executeTcgTradeButton(interaction) {
     }
     if (action === 'reject') {
       if (interaction.user.id !== trade.offered_to_user_id) {
-        await interaction.reply({ content: 'Only the target user can reject this trade.', ephemeral: false });
+        await interaction.reply({ content: 'Only the target user can reject this trade.', ephemeral });
         return true;
       }
       const rejected = rejectOffer(tradeId, interaction.user.id);
@@ -1528,20 +1831,35 @@ export async function executeTcgTradeButton(interaction) {
       });
       return true;
     }
-    await interaction.reply({ content: 'Unknown trade action.', ephemeral: false });
+    await interaction.reply({ content: 'Unknown trade action.', ephemeral });
     return true;
   } catch (err) {
-    await interaction.reply({ content: `Trade action failed: ${err.message}`, ephemeral: false });
+    await interaction.reply({ content: `Trade action failed: ${err.message}`, ephemeral });
     return true;
   }
 }
 
 export async function executeTcgPackButton(interaction) {
-  const [prefix, action, rawPage, rawView] = String(interaction.customId || '').split(':');
+  const parts = String(interaction.customId || '').split(':');
+  const [prefix, action, rawPage, rawView] = parts;
   if (prefix !== 'tcg_pack') return false;
   const page = Math.max(1, Number(rawPage || 1));
+  const ephemeral = tcgEphemeral(VisibilityCategory.HIGH_NOISE);
 
   try {
+    if (action === 'page') {
+      const view = parts[2] === 'open' ? 'open' : 'claim';
+      const direction = parts[3] === 'next' ? 'next' : 'prev';
+      const currentIndex = Math.max(0, Number(parts[4] || 0));
+      const nextPage = Math.max(1, currentIndex + 1 + (direction === 'next' ? 1 : -1));
+      await interaction.deferUpdate();
+      if (view === 'open') {
+        await renderOpenQueue(interaction, { page: nextPage });
+      } else {
+        await renderClaimQueue(interaction, { page: nextPage });
+      }
+      return true;
+    }
     if (action === 'view_claim') {
       await interaction.deferUpdate();
       await renderClaimQueue(interaction, { page });
@@ -1555,7 +1873,7 @@ export async function executeTcgPackButton(interaction) {
     if (action === 'claim_top') {
       const top = listClaimablePacks(interaction.user.id, 1)[0];
       if (!top) {
-        await interaction.reply({ content: 'No claimable packs right now.', ephemeral: false });
+        await interaction.reply({ content: 'No claimable packs right now.', ephemeral });
         return true;
       }
       claimPack(top.pack_id, interaction.user.id);
@@ -1567,7 +1885,7 @@ export async function executeTcgPackButton(interaction) {
       try {
         claimCooldownPack(interaction.user.id);
       } catch (err) {
-        await interaction.reply({ content: err.message === 'cooldown not ready' ? 'Cooldown pack is not ready yet.' : `Claim failed: ${err.message}`, ephemeral: false });
+        await interaction.reply({ content: err.message === 'cooldown not ready' ? 'Cooldown pack is not ready yet.' : `Claim failed: ${err.message}`, ephemeral });
         return true;
       }
       await interaction.deferUpdate();
@@ -1577,7 +1895,7 @@ export async function executeTcgPackButton(interaction) {
     if (action === 'open_top') {
       const top = listUnopenedPacks(interaction.user.id, 1)[0];
       if (!top) {
-        await interaction.reply({ content: 'No unopened packs right now.', ephemeral: false });
+        await interaction.reply({ content: 'No unopened packs right now.', ephemeral });
         return true;
       }
       await openClaimedPackById(interaction, top.pack_id);
@@ -1594,10 +1912,10 @@ export async function executeTcgPackButton(interaction) {
       }
       return true;
     }
-    await interaction.reply({ content: 'Unknown pack action.', ephemeral: false });
+    await interaction.reply({ content: 'Unknown pack action.', ephemeral });
     return true;
   } catch (err) {
-    await interaction.reply({ content: `Pack action failed: ${err.message}`, ephemeral: false });
+    await interaction.reply({ content: `Pack action failed: ${err.message}`, ephemeral });
     return true;
   }
 }
@@ -1605,14 +1923,15 @@ export async function executeTcgPackButton(interaction) {
 export async function executeTcgRevealButton(interaction) {
   const [prefix, action, sessionId] = String(interaction.customId || '').split(':');
   if (prefix !== 'tcg_reveal' || !sessionId) return false;
+  const ephemeral = tcgEphemeral(VisibilityCategory.HIGH_NOISE);
 
   const session = getRevealSession(sessionId);
   if (!session) {
-    await interaction.reply({ content: 'Reveal session not found or expired.', ephemeral: false });
+    await interaction.reply({ content: 'Reveal session not found or expired.', ephemeral });
     return true;
   }
   if (interaction.user.id !== session.user_id) {
-    await interaction.reply({ content: 'Only the pack opener can control this reveal.', ephemeral: false });
+    await interaction.reply({ content: 'Only the pack opener can control this reveal.', ephemeral });
     return true;
   }
 
@@ -1639,7 +1958,7 @@ export async function executeTcgRevealButton(interaction) {
         files: [],
       });
     } else {
-      await interaction.reply({ content: `Reveal unavailable: ${err.message}`, ephemeral: false });
+      await interaction.reply({ content: `Reveal unavailable: ${err.message}`, ephemeral });
     }
     return true;
   }

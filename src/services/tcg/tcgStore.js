@@ -681,6 +681,31 @@ const getOwnedInstancesByCardStmt = db.prepare(`
   WHERE owner_user_id = ? AND card_id = ? AND state = 'owned'
   ORDER BY minted_at DESC
 `);
+const getUserRarestOwnedCardStmt = db.prepare(`
+  SELECT
+    i.instance_id,
+    i.owner_user_id,
+    i.minted_at,
+    i.state,
+    c.card_id,
+    c.name,
+    c.rarity,
+    c.rarity_tier,
+    c.set_code,
+    c.image_small,
+    c.image_large,
+    c.market_price_usd
+  FROM tcg_card_instances i
+  JOIN tcg_cards c ON c.card_id = i.card_id
+  WHERE i.owner_user_id = ?
+    AND i.state = 'owned'
+  ORDER BY
+    CASE WHEN c.market_price_usd IS NULL THEN 1 ELSE 0 END ASC,
+    c.market_price_usd DESC,
+    c.rarity_tier DESC,
+    i.minted_at DESC
+  LIMIT 1
+`);
 const updateInstanceStateForMarketSellStmt = db.prepare(`
   UPDATE tcg_card_instances
   SET state = 'market_sold', lock_trade_id = ''
@@ -1853,6 +1878,10 @@ export function getCardInstance(instanceId) {
 
 export function getCardById(cardId) {
   return db.prepare('SELECT * FROM tcg_cards WHERE card_id = ?').get(cardId) || null;
+}
+
+export function getUserRarestCard(userId) {
+  return getUserRarestOwnedCardStmt.get(userId) || null;
 }
 
 export function getCardValue(card) {

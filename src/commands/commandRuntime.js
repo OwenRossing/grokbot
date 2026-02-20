@@ -22,6 +22,7 @@ import {
   hasMessageAdminAccess,
   isSuperAdminUser,
 } from '../utils/auth.js';
+import { ensureEmbedPayload } from '../utils/embedReply.js';
 
 const CONFIRMATION_TTL_MS = 5 * 60 * 1000;
 const pendingConfirmations = new Map();
@@ -539,7 +540,10 @@ function buildConfirmComponents(token) {
 
 async function sendInteractionReply(interaction, { message, visibility, components }) {
   const ephemeral = visibility === 'private';
-  const payload = { content: message, ephemeral, components: components || [] };
+  const payload = ensureEmbedPayload(
+    { content: message, ephemeral, components: components || [] },
+    { defaultTitle: 'Command Result', source: 'commandRuntime.sendInteractionReply' }
+  );
   if (interaction.deferred) {
     return interaction.editReply(payload);
   }
@@ -552,13 +556,33 @@ async function sendInteractionReply(interaction, { message, visibility, componen
 async function sendMessageReply(message, { text, visibility, components }) {
   if (visibility === 'private') {
     try {
-      await message.author.send({ content: text, components: components || [] });
-      return message.reply({ content: 'Sent details to your DM.' });
+      await message.author.send(
+        ensureEmbedPayload(
+          { content: text, components: components || [] },
+          { defaultTitle: 'Command Result', source: 'commandRuntime.sendMessageReply.dm' }
+        )
+      );
+      return message.reply(
+        ensureEmbedPayload(
+          { content: 'Sent details to your DM.' },
+          { defaultTitle: 'Command Result', source: 'commandRuntime.sendMessageReply.dm.notice' }
+        )
+      );
     } catch {
-      return message.reply({ content: text, components: components || [] });
+      return message.reply(
+        ensureEmbedPayload(
+          { content: text, components: components || [] },
+          { defaultTitle: 'Command Result', source: 'commandRuntime.sendMessageReply.dm.fallback' }
+        )
+      );
     }
   }
-  return message.reply({ content: text, components: components || [] });
+  return message.reply(
+    ensureEmbedPayload(
+      { content: text, components: components || [] },
+      { defaultTitle: 'Command Result', source: 'commandRuntime.sendMessageReply.public' }
+    )
+  );
 }
 
 export async function executeCommandRequestFromInteraction({

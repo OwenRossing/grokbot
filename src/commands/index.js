@@ -298,6 +298,13 @@ export const claimPackCommand = {
     ),
 };
 
+export const packsCommand = {
+  data: new SlashCommandBuilder()
+    .setName('packs')
+    .setDescription('Open the interactive pack hub')
+    .setDMPermission(true),
+};
+
 export const openPackCommand = {
   data: new SlashCommandBuilder()
     .setName('open-pack')
@@ -803,6 +810,7 @@ export const commands = [
   doCommand,
   searchCommand,
   claimPackCommand,
+  packsCommand,
   openPackCommand,
   viewUnopenedPacksCommand,
   viewPackCompletionCommand,

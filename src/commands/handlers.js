@@ -48,6 +48,8 @@ import {
   parseNaturalCommandRequest,
 } from './commandRuntime.js';
 import { hasInteractionAdminAccess } from '../utils/auth.js';
+import { getCopy } from '../copy.js';
+import { ensureEmbedPayload } from '../utils/embedReply.js';
 
 export async function executeAskCommand(interaction, inMemoryTurns, client) {
   const question = interaction.options.getString('question', true);
@@ -63,7 +65,7 @@ export async function executeAskCommand(interaction, inMemoryTurns, client) {
   const globalName = interaction.user.globalName || '';
 
   if (containsHateSpeech(question)) {
-    await interaction.reply({ content: 'nah, not touching that.', ephemeral: true });
+    await interaction.reply({ content: getCopy('refusal_hate_speech'), ephemeral: true });
     return;
   }
 
@@ -178,7 +180,10 @@ export async function executePollCommand(interaction, pollTimers) {
   await interaction.deferReply({ ephemeral: true });
   const channel = interaction.channel;
   const pollMsg = await channel.send({
-    content: `📊 ${question}\n\n${options.map((o, i) => `${NUMBER_EMOJIS[i]} ${o}`).join('\n')}\n\n⏳ closes <t:${Math.floor(closeAt/1000)}:R>`
+    ...ensureEmbedPayload(
+      { content: `📊 ${question}\n\n${options.map((o, i) => `${NUMBER_EMOJIS[i]} ${o}`).join('\n')}\n\n⏳ closes <t:${Math.floor(closeAt / 1000)}:R>` },
+      { defaultTitle: 'Poll Created', source: 'executePollCommand.channel.send' }
+    ),
   });
   trackBotMessage(pollMsg.id, pollMsg.channelId, pollMsg.guildId);
   for (let i = 0; i < options.length; i++) {
@@ -237,7 +242,12 @@ export async function executeGifCommand(interaction) {
     await interaction.editReply({ content: 'No GIF found or Giphy not configured (set GIPHY_API_KEY).' });
     return;
   }
-  const sent = await interaction.channel.send({ content: url });
+  const sent = await interaction.channel.send(
+    ensureEmbedPayload(
+      { content: url },
+      { defaultTitle: 'GIF Result', source: 'executeGifCommand.channel.send' }
+    )
+  );
   trackBotMessage(sent.id, interaction.channelId, interaction.guildId);
   await interaction.editReply({ content: 'Posted your GIF!' });
 }

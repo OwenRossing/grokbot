@@ -1,6 +1,8 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import fs from 'node:fs';
 import path from 'node:path';
+import { getCopy } from './copy.js';
+import { sanitizeUserTextForLlm } from './utils/sanitizeForLlm.js';
 
 const DEFAULT_MODEL = process.env.GROK_MODEL || 'grok-4-1-fast-reasoning-latest';
 const DEFAULT_VISION_MODEL = process.env.GROK_VISION_MODEL || 'grok-4-1-fast-reasoning-latest';
@@ -66,13 +68,12 @@ const systemPrompt = (() => {
       'You are {BOT_NAME}, an advanced AI assistant integrated into a Discord server. ' +
       'Provide helpful, concise, and friendly responses to user queries. ' +
       'When appropriate, use markdown formatting for code snippets and lists. ' +
-      'If you do not know the answer, respond with "idk tbh".'
+      `If you do not know the answer, respond with "${getCopy('llm_default_unknown_answer')}".`
     );
   }
 })();
 
-const fallbackErrorLine =
-  'cant answer rn bro too busy gooning (grok api error)';
+const fallbackErrorLine = getCopy('llm_fallback_error');
 
 function buildMessages({
   botName,
@@ -92,6 +93,8 @@ function buildMessages({
   retrievedContextBlocks,
   webSearchResults,
 }) {
+  const sanitizedUserText = sanitizeUserTextForLlm(userContent || '');
+  const safeUserContent = sanitizedUserText.sanitized || String(userContent || '');
   const messages = [
     {
       role: 'system',
@@ -158,7 +161,7 @@ function buildMessages({
     messages.push({
       role: 'user',
       content: [
-        { type: 'text', text: userContent },
+        { type: 'text', text: safeUserContent },
         ...imageInputs.map((url) => ({
           type: 'image_url',
           image_url: { url, detail: 'high' },
@@ -166,7 +169,7 @@ function buildMessages({
       ],
     });
   } else {
-    messages.push({ role: 'user', content: userContent });
+    messages.push({ role: 'user', content: safeUserContent });
   }
   return messages;
 }
@@ -246,7 +249,7 @@ async function callOnce({
   }
 
   const data = await res.json();
-  return data?.choices?.[0]?.message?.content?.trim() || 'idk tbh';
+  return data?.choices?.[0]?.message?.content?.trim() || getCopy('llm_default_unknown_answer');
 }
 
 export async function getLLMResponse({
@@ -288,7 +291,7 @@ export async function getLLMResponse({
     });
   } catch (err) {
     if (err?.code === 'VISION_UNSUPPORTED') {
-      return 'image input needs a vision-capable model. set GROK_VISION_MODEL or use a multimodal GROK_MODEL.';
+      return getCopy('llm_vision_unsupported');
     }
     console.error('LLM request failed (first attempt):', err);
     await delay(300);
@@ -313,7 +316,7 @@ export async function getLLMResponse({
       });
     } catch (retryErr) {
       if (retryErr?.code === 'VISION_UNSUPPORTED') {
-        return 'image input needs a vision-capable model. set GROK_VISION_MODEL or use a multimodal GROK_MODEL.';
+        return getCopy('llm_vision_unsupported');
       }
       console.error('LLM request failed (retry):', retryErr);
       return fallbackErrorLine;

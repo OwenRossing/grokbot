@@ -11,6 +11,7 @@ import { getLLMResponse } from '../llm.js';
 import { MAX_IMAGES } from '../utils/constants.js';
 import { containsHateSpeech } from '../utils/validators.js';
 import { shouldRecordMemoryMessage } from '../utils/helpers.js';
+import { getCopy } from '../copy.js';
 
 function addTurn(inMemoryTurns, userId, role, content) {
   const turns = inMemoryTurns.get(userId) || [];
@@ -46,7 +47,7 @@ export async function handlePrompt({
   }
 
   if (containsHateSpeech(prompt) || containsHateSpeech(replyContextText || '')) {
-    await reply('nah, not touching that.');
+    await reply(getCopy('refusal_hate_speech'));
     return;
   }
 

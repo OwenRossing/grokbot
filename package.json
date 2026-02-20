@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "set NODE_ENV=development&& node src/index.js"
+    "dev": "set NODE_ENV=development&& node src/index.js",
+    "check:secrets": "git ls-files --error-unmatch .env >/dev/null 2>&1 && (echo \"ERROR: .env is tracked by git\" && exit 1) || (echo \"OK: .env is not tracked\" && exit 0)",
+    "test": "node --test"
   },
   "dependencies": {
     "better-sqlite3": "^9.4.3",
