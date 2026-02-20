@@ -74,6 +74,17 @@ const systemPrompt = (() => {
 })();
 
 const fallbackErrorLine = getCopy('llm_fallback_error');
+const PREFIX_COMMAND_PATTERN = /(^|\s)!\w{2,}\b/i;
+const OTHER_BOT_PATTERN = /\bpok[eé]two\b/i;
+
+function applyHallucinationGuard(text) {
+  const output = String(text || '').trim();
+  if (!output) return getCopy('llm_default_unknown_answer');
+  if (PREFIX_COMMAND_PATTERN.test(output) || OTHER_BOT_PATTERN.test(output)) {
+    return 'I only support slash commands and in-message buttons here. Use `/packs` for pack actions or `/ask` for general questions.';
+  }
+  return output;
+}
 
 function buildMessages({
   botName,
@@ -249,7 +260,7 @@ async function callOnce({
   }
 
   const data = await res.json();
-  return data?.choices?.[0]?.message?.content?.trim() || getCopy('llm_default_unknown_answer');
+  return applyHallucinationGuard(data?.choices?.[0]?.message?.content?.trim());
 }
 
 export async function getLLMResponse({

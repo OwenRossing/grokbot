@@ -16,6 +16,14 @@ const MARKET_BUY_MULT = Number.parseFloat(process.env.TCG_MARKET_BUY_MULT || '1.
 const MARKET_SELL_MULT = Number.parseFloat(process.env.TCG_MARKET_SELL_MULT || '0.60') || 0.6;
 const MARKET_BUY_FLOOR = Math.max(1, Number.parseInt(process.env.TCG_MARKET_BUY_FLOOR || '10', 10) || 10);
 const MARKET_SELL_FLOOR = Math.max(1, Number.parseInt(process.env.TCG_MARKET_SELL_FLOOR || '5', 10) || 5);
+export const TRADE_IN_CREDITS_BY_RARITY_TIER = Object.freeze({
+  1: 2,
+  2: 4,
+  3: 8,
+  4: 16,
+  5: 32,
+  6: 64,
+});
 
 function now() {
   return Date.now();
@@ -709,6 +717,11 @@ const getUserRarestOwnedCardStmt = db.prepare(`
 const updateInstanceStateForMarketSellStmt = db.prepare(`
   UPDATE tcg_card_instances
   SET state = 'market_sold', lock_trade_id = ''
+  WHERE instance_id = ? AND owner_user_id = ? AND state = 'owned'
+`);
+const updateInstanceStateForTradeInStmt = db.prepare(`
+  UPDATE tcg_card_instances
+  SET state = 'trade_in_burned', lock_trade_id = ''
   WHERE instance_id = ? AND owner_user_id = ? AND state = 'owned'
 `);
 const listOwnedCardCountsStmt = db.prepare(`
@@ -2074,6 +2087,65 @@ export const executeMarketSellDuplicates = db.transaction(({
     return { items: [], quantity: 0, totalCredits: 0 };
   }
   return executeMarketSellInstances({ userId, instanceIds: selectedInstanceIds });
+});
+
+function getTradeInCreditsForTier(tier) {
+  const safeTier = Math.max(1, Math.min(6, Number(tier || 1)));
+  return Number(TRADE_IN_CREDITS_BY_RARITY_TIER[safeTier] || TRADE_IN_CREDITS_BY_RARITY_TIER[1] || 1);
+}
+
+export const executeTradeInDuplicates = db.transaction((userId) => {
+  const rows = listOwnedCardCountsStmt.all(userId, 1, 500);
+  if (!rows.length) {
+    const wallet = getWalletInternal(userId);
+    return {
+      burnedCount: 0,
+      totalCredits: 0,
+      walletCredits: wallet.credits,
+      breakdown: [],
+    };
+  }
+
+  const breakdownMap = new Map();
+  let burnedCount = 0;
+  let totalCredits = 0;
+
+  for (const row of rows) {
+    const ownedCount = Number(row.owned_count || 0);
+    if (ownedCount <= 1) continue;
+    const burnCount = ownedCount - 1;
+    const creditsPerCard = getTradeInCreditsForTier(row.rarity_tier);
+    const ownedInstances = getOwnedInstancesByCardStmt.all(userId, row.card_id);
+    const burnInstances = ownedInstances.slice(1);
+
+    for (const inst of burnInstances) {
+      const updated = updateInstanceStateForTradeInStmt.run(inst.instance_id, userId);
+      if (updated.changes !== 1) {
+        throw new Error(`failed to trade-in ${inst.instance_id}`);
+      }
+    }
+
+    const earned = burnCount * creditsPerCard;
+    burnedCount += burnCount;
+    totalCredits += earned;
+
+    const key = String(Math.max(1, Math.min(6, Number(row.rarity_tier || 1))));
+    const prev = breakdownMap.get(key) || { tier: Number(key), burned: 0, credits: 0 };
+    prev.burned += burnCount;
+    prev.credits += earned;
+    breakdownMap.set(key, prev);
+  }
+
+  const updatedWallet = totalCredits > 0
+    ? addCreditsInternal(userId, totalCredits, 'trade_in_duplicates', `trade_in_${now()}`)
+    : getWalletInternal(userId);
+  const breakdown = [...breakdownMap.values()].sort((a, b) => b.tier - a.tier);
+  return {
+    burnedCount,
+    totalCredits,
+    walletCredits: updatedWallet.credits,
+    breakdown,
+  };
 });
 
 export function grantAdminCredits(adminUserId, userId, delta, reason = 'admin_grant_credits') {

@@ -8,9 +8,12 @@ import {
   buildPackOpenSummaryText,
 } from '../services/tcg/tcgUx.js';
 import {
+  formatRarity,
+  resolveSetName,
+} from '../services/catalog/catalogResolver.js';
+import {
   claimCooldownPack,
   claimPack,
-  executeMarketSellDuplicates,
   getUserRarestCard,
   getFreePackAvailability,
   getCardsBySet,
@@ -120,8 +123,12 @@ export function matchNaturalTcgCommand(content) {
     return { action: 'market_help' };
   }
 
+  if (/\b(sell my duplicates|sell duplicates|sell dupes|sell duplicates on the market)\b/.test(text)) {
+    return { action: 'sell_duplicates_intent' };
+  }
+
   if (/\b(sell|trade)\b.*\bduplicates?\b.*\bmarket\b/.test(text) || /\bcan you sell my duplicates on the market\b/.test(text)) {
-    return { action: 'market_sell_duplicates' };
+    return { action: 'sell_duplicates_intent' };
   }
 
   if (/\bhow do packs work\b/.test(text) || /\bwhat commands do i use for cards\b/.test(text)) {
@@ -388,11 +395,10 @@ async function tryHandleNaturalTcg({ message, content }) {
       const embed = {
         title: card.name || 'Rarest Card',
         description:
-          `Set ${String(card.set_code || '').toUpperCase()} • ${card.rarity || 'Unknown'}\n` +
+          `Set ${resolveSetName(card.set_code)} • ${formatRarity(card.rarity)}\n` +
           `Rarity Tier: ${card.rarity_tier || 1}`,
         fields: [
           { name: 'Estimated', value: Number.isFinite(Number(card.market_price_usd)) ? `$${Number(card.market_price_usd).toFixed(2)}` : '—', inline: true },
-          { name: 'Ref', value: String(card.instance_id || '').slice(-8) || 'n/a', inline: true },
         ],
       };
       if (card.image_large || card.image_small) {
@@ -432,17 +438,11 @@ async function tryHandleNaturalTcg({ message, content }) {
       return true;
     }
 
-    if (parsed.action === 'market_sell_duplicates') {
-      const sold = executeMarketSellDuplicates({
-        userId: message.author.id,
-        keepPerCard: 2,
-        maxTier: 3,
-        maxUnitValue: Number.MAX_SAFE_INTEGER,
-      });
+    if (parsed.action === 'sell_duplicates_intent') {
       await message.reply({
         embeds: [buildInfoEmbed(
-          'Market Sell Duplicates',
-          `Auto-sold ${sold.quantity} duplicate card(s) for ${sold.totalCredits} credits.`
+          'Duplicates',
+          'Selling duplicates automatically is not supported in natural chat. Use `/packs` -> `Trade In`.'
         )],
       });
       return true;
@@ -487,7 +487,7 @@ async function tryHandleNaturalTcg({ message, content }) {
       const unopenedCount = listUnopenedPacks(message.author.id, 100).length;
       await message.reply({
         content:
-          `${message.author} claimed a **${String(claimed.set_code || '').toUpperCase()}** pack. ` +
+          `${message.author} claimed a **${resolveSetName(claimed.set_code)}** pack. ` +
           `You now have ${unopenedCount} unopened pack${unopenedCount === 1 ? '' : 's'}. ` +
           `Say "open my pack" to open it.`,
       });

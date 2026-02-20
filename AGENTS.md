@@ -11,6 +11,8 @@
 - `npm install` - install dependencies from `package.json`.
 - `npm start` - run the bot with `node src/index.js`, register slash commands, and start event listeners.
 - `node src/index.js` - direct start command when debugging with custom Node flags.
+- `npm test` - run the built-in Node test suite (`node --test`).
+- `npm run check:secrets` - fail if `.env` is tracked by git.
 - VM deploy target: `/home/grokbot/grokbot` with `grokbot.service` (`sudo systemctl restart grokbot` after pull/install).
 
 ## Coding Style & Naming Conventions
@@ -20,7 +22,7 @@
 - Keep function and variable names `camelCase`; keep env var names `UPPER_SNAKE_CASE`.
 
 ## Testing Guidelines
-- There is no formal test suite yet.
+- Use `npm test` for regression checks (Node built-in test runner).
 - Validate changes by running `npm start` and exercising mention flows, `/ask`, polls, GIFs, `/memory`, `/search`, and `/tcg` behavior in a test guild.
 - Watch startup logs for missing env vars (`DISCORD_TOKEN`, `GROK_BASE_URL`, `GROK_API_KEY`) and command registration issues.
 - For TCG, smoke test: `/tcg action:collection_stats`, `/tcg action:inventory`, `/tcg action:open_pack set_code:sv1`, and one trade offer/accept flow.
@@ -32,6 +34,7 @@
 
 ## Security & Configuration Tips
 - Never commit `.env`; use `.env.example` as the template.
+- Run `npm run check:secrets` before pushing if env files changed.
 - Document permission or memory-policy changes in `prompts/system_prompt.txt` when behavior depends on policy.
 - Optional TCG API key: `POKEMONTCG_API_KEY` for higher external API rate limits.
 
@@ -39,3 +42,5 @@
 - Slash command registration is global + guild scoped on startup for fast command propagation.
 - `/memory` uses a single action-based command surface.
 - `/tcg` exists with action-based operations; pack reveal is staged animation text updates (not rendered GIF media yet).
+- Replies are embed-first via shared wrappers/helpers; avoid plain-text primary outputs for commands.
+- Guild command responses are forced non-ephemeral for consistency (DMs are still private by channel scope).

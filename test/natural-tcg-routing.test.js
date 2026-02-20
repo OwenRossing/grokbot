@@ -54,10 +54,20 @@ test('routes completion asks to pack_completion', () => {
   assert.equal(parsed.action, 'pack_completion');
 });
 
-test('routes market duplicate sell phrase deterministically', () => {
-  const parsed = matchNaturalTcgCommand('can you sell my duplicates on the market');
-  assert.ok(parsed);
-  assert.equal(parsed.action, 'market_sell_duplicates');
+test('routes duplicate sell phrases to sell_duplicates_intent', () => {
+  const phrases = [
+    'sell my duplicates',
+    'sell duplicates',
+    'sell dupes',
+    'sell duplicates on the market',
+    'can you sell my duplicates on the market',
+  ];
+
+  for (const phrase of phrases) {
+    const parsed = matchNaturalTcgCommand(phrase);
+    assert.ok(parsed, `expected parse for phrase: ${phrase}`);
+    assert.equal(parsed.action, 'sell_duplicates_intent', `expected duplicate-sell action for: ${phrase}`);
+  }
 });
 
 test('routes market usage help phrase deterministically', () => {

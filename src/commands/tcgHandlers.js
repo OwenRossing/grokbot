@@ -4,11 +4,17 @@ import {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  StringSelectMenuBuilder,
 } from 'discord.js';
 import { syncSetFromApi } from '../services/tcg/tcgApi.js';
 import { rollPack, rollPackDetailed } from '../services/tcg/packEngine.js';
 import { renderRevealGif } from '../services/tcg/revealRenderer.js';
 import { getCardEstimatedPrice } from '../services/pricing/pokemonTcgApiPricing.js';
+import {
+  formatPackDisplayName,
+  formatRarity,
+  resolveSetName,
+} from '../services/catalog/catalogResolver.js';
 import {
   buildCompletionEmbedData,
   buildPackOpenHeadline,
@@ -24,6 +30,7 @@ import {
   claimPack,
   executeMarketBuy,
   executeMarketSellDuplicates,
+  executeTradeInDuplicates,
   executeMarketSellInstances,
   activateDueLiveEvents,
   createLiveEvent,
@@ -97,7 +104,9 @@ function money(v) {
 function formatEstimatedLine(price) {
   if (!Number.isFinite(Number(price?.dollars))) return 'Estimated: —';
   const base = `Estimated: ${money(price.dollars)}${price?.source ? ` (${price.source})` : ''}`;
-  if (Number.isFinite(Number(price?.updatedAt))) {
+  const updatedAt = Number(price?.updatedAt);
+  const minimumReasonableTs = Date.UTC(2020, 0, 1);
+  if (Number.isFinite(updatedAt) && updatedAt >= minimumReasonableTs && updatedAt <= (Date.now() + 24 * 60 * 60 * 1000)) {
     return `${base} • updated <t:${Math.floor(Number(price.updatedAt) / 1000)}:R>`;
   }
   return base;
@@ -169,6 +178,69 @@ function isAdminForCtx(ctx) {
   return hasInteractionAdminAccess(ctx.interaction, ctx.superAdminId);
 }
 
+function getRarityIcon(row) {
+  const tier = Number(row?.rarity_tier || 1);
+  if (tier >= 6) return '🌟';
+  if (tier === 5) return '✨';
+  if (tier === 4) return '💠';
+  if (tier === 3) return '🔷';
+  if (tier === 2) return '🔹';
+  return '▫️';
+}
+
+function buildInventoryRowsText(rows = []) {
+  return rows.map((row, idx) =>
+    `${idx + 1}. ${getRarityIcon(row)} ${row.name} [${formatRarity(row.rarity)}] (${resolveSetName(row.set_code)})`
+  );
+}
+
+function buildInventorySelectRow(rows = []) {
+  if (!rows.length) return null;
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('tcg_inv:select')
+    .setPlaceholder('View card...')
+    .addOptions(
+      rows.slice(0, 25).map((row, idx) => ({
+        label: `${idx + 1}. ${row.name}`.slice(0, 100),
+        description: `${formatRarity(row.rarity)} • ${resolveSetName(row.set_code)}`.slice(0, 100),
+        value: row.instance_id,
+      }))
+    );
+  return new ActionRowBuilder().addComponents(select);
+}
+
+function buildInventoryListEmbed({ titleUser, inv, duplicateRows = [] }) {
+  const duplicateCopies = duplicateRows.reduce((sum, row) => sum + Math.max(0, Number(row.owned_count || 0) - 1), 0);
+  const uniqueCount = Math.max(0, Number(inv.total || 0) - duplicateCopies);
+  const lines = buildInventoryRowsText(inv.rows);
+  return new EmbedBuilder()
+    .setTitle('Your Collection')
+    .setDescription(`Viewing: **${titleUser}** • Page ${inv.page}/${inv.totalPages}`)
+    .addFields(
+      { name: 'Total', value: `${inv.total}`, inline: true },
+      { name: 'Unique', value: `${uniqueCount}`, inline: true },
+      { name: 'Duplicates', value: `${duplicateCopies}`, inline: true },
+      { name: 'Cards', value: lines.join('\n') || 'No cards.', inline: false }
+    );
+}
+
+async function buildInventoryCardEmbed(instanceId) {
+  const card = getCardInstance(instanceId);
+  if (!card) return null;
+  const cardMeta = getCardById(card.card_id) || {};
+  const estimated = await getCardEstimatedPrice(card.card_id);
+  const embed = new EmbedBuilder()
+    .setTitle(card.name || 'Card')
+    .setDescription(`Set ${resolveSetName(card.set_code)} • ${formatRarity(card.rarity)}`)
+    .addFields(
+      { name: 'Estimated', value: formatEstimatedLine(estimated), inline: false },
+      { name: 'State', value: card.state || 'owned', inline: true }
+    );
+  const image = cardMeta.image_large || cardMeta.image_small || '';
+  if (image) embed.setImage(image);
+  return embed;
+}
+
 function formatActiveEventLines(effects, { setCode = '' } = {}) {
   if (!effects?.enabled) return ['Events are disabled.'];
   const lines = [];
@@ -182,7 +254,7 @@ function formatActiveEventLines(effects, { setCode = '' } = {}) {
     lines.push(`Credit Boost: ${effects.creditMultiplier.toFixed(2)}x rewards`);
   }
   if (!lines.length) {
-    lines.push(setCode ? `No active events for ${setCode.toUpperCase()}.` : 'No active events.');
+    lines.push(setCode ? `No active events for ${resolveSetName(setCode)}.` : 'No active events.');
   }
   return lines;
 }
@@ -255,15 +327,15 @@ async function buildRevealPayload({ session, user, setCode, rewards, includeValu
   }
 
   const cardEstimated = includeValue ? await getCardEstimatedPrice(card.card_id) : null;
-  const fields = [{ name: 'Set Opened', value: setCode, inline: true }];
+  const fields = [{ name: 'Set Opened', value: resolveSetName(setCode), inline: true }];
   if (includeValue) {
     fields.unshift({ name: 'Estimated', value: formatEstimatedLine(cardEstimated), inline: true });
   }
   const embed = new EmbedBuilder()
     .setTitle(`${card.name}`)
     .setDescription([
-      `Set: ${card.set_code}`,
-      `Rarity: ${card.rarity || 'Unknown'}`,
+      `Set: ${resolveSetName(card.set_code)}`,
+      `Rarity: ${formatRarity(card.rarity)}`,
       `Card ${session.current_index + 1}/${session.cards.length}`,
       rewards
         ? `Credits earned: ${rewards.earned} (base ${rewards.base} + streak ${rewards.streakBonus})`
@@ -629,7 +701,7 @@ async function renderClaimQueue(interaction, { page = 1 } = {}) {
         name: 'Claimable Packs',
         value: pagination.rows.length
           ? pagination.rows.map((row, idx) =>
-            `${pagination.start + idx + 1}. \`${row.pack_id}\` • **${row.set_code.toUpperCase()}** • ${row.grant_source || 'claimable'}`
+            `${pagination.start + idx + 1}. ${formatPackDisplayName(row)}`
           ).join('\n')
           : 'No claimable packs.',
         inline: false,
@@ -691,7 +763,7 @@ async function renderOpenQueue(interaction, { page = 1 } = {}) {
         name: 'Unopened Packs',
         value: pagination.rows.length
           ? pagination.rows.map((row, idx) =>
-            `${pagination.start + idx + 1}. \`${row.pack_id}\` • **${row.set_code.toUpperCase()}** • ${row.grant_source || 'unopened'}`
+            `${pagination.start + idx + 1}. ${formatPackDisplayName(row)}`
           ).join('\n')
           : 'No unopened packs.',
         inline: false,
@@ -793,28 +865,22 @@ async function handleInventory(ctx) {
     nameLike: filter,
   });
   const titleUser = targetUser ? `${targetUser.username}` : 'You';
-  const lines = inv.rows.map((row, idx) =>
-    `${idx + 1}. ${row.name} [${row.rarity || 'Unknown'}] (${row.set_code}) • ref ${String(row.instance_id).slice(-6)}`
-  );
-  const embed = new EmbedBuilder()
-    .setTitle(`${titleUser} Inventory`)
-    .setDescription(`Page ${inv.page}/${inv.totalPages} • ${inv.total} cards`)
-    .addFields({
-      name: 'Cards',
-      value: lines.join('\n') || 'No cards.',
-      inline: false,
-    });
+  const duplicateRows = getDuplicateSummaryForUser(targetUser?.id || interaction.user.id, 1);
+  const embed = buildInventoryListEmbed({ titleUser, inv, duplicateRows });
   const { pageLabel } = buildPagedEmbed({
-    title: `${titleUser} Inventory`,
+    title: 'Your Collection',
     pages: Array.from({ length: inv.totalPages }, () => 'page'),
     pageIndex: inv.page - 1,
   });
   embed.setFooter({ text: pageLabel });
-  const components = buildPagerComponents({
+  const components = [];
+  const selectRow = buildInventorySelectRow(inv.rows);
+  if (selectRow) components.push(selectRow);
+  components.push(...buildPagerComponents({
     pageIndex: inv.page - 1,
     totalPages: inv.totalPages,
     baseCustomId: 'tcg_page:inventory',
-  });
+  }));
   warnIfPagedWithoutPager({ totalPages: inv.totalPages, components, source: 'handleInventory' });
   await interaction.reply({
     embeds: [embed],
@@ -829,6 +895,7 @@ async function handleInventory(ctx) {
     targetUserId: targetUser?.id || '',
     ephemeral,
     userId: interaction.user.id,
+    ownerLabel: titleUser,
   });
 }
 
@@ -849,11 +916,10 @@ async function handleCardView(ctx) {
   const estimated = await getCardEstimatedPrice(card.card_id);
   const embed = new EmbedBuilder()
     .setTitle(card.name || 'Card')
-    .setDescription(`Set ${String(card.set_code || '').toUpperCase()} • ${card.rarity || 'Unknown'}`)
+    .setDescription(`Set ${resolveSetName(card.set_code)} • ${formatRarity(card.rarity)}`)
     .addFields(
       { name: 'Estimated', value: formatEstimatedLine(estimated), inline: false },
-      { name: 'State', value: card.state || 'owned', inline: true },
-      { name: 'Ref', value: String(card.instance_id || '').slice(-8) || 'n/a', inline: true }
+      { name: 'State', value: card.state || 'owned', inline: true }
     );
   const image = cardMeta.image_large || cardMeta.image_small || '';
   if (image) embed.setImage(image);
@@ -997,7 +1063,7 @@ async function handleMarketBrowse(ctx) {
       name: 'Listings',
       value: result.rows.length
         ? result.rows.map((row, idx) =>
-          `${idx + 1}. \`${row.card_id}\` ${row.name} (${row.set_code.toUpperCase()}) • buy ${row.buy_price_credits} • sell ${row.sell_price_credits}`
+          `${idx + 1}. ${row.name} (${resolveSetName(row.set_code)}) • buy ${row.buy_price_credits} • sell ${row.sell_price_credits}`
         ).join('\n')
         : 'No listings matched your filter.',
       inline: false,
@@ -1673,25 +1739,23 @@ export async function executeTcgPageButton(interaction, { superAdminId } = {}) {
       setCode: state.setCode || '',
       nameLike: state.filter || '',
     });
-    const titleUser = state.targetUserId ? `<@${state.targetUserId}>` : 'You';
-    const lines = inv.rows.map((row, idx) =>
-      `${idx + 1}. ${row.name} [${row.rarity || 'Unknown'}] (${row.set_code}) • ref ${String(row.instance_id).slice(-6)}`
-    );
-    const embed = new EmbedBuilder()
-      .setTitle(`${titleUser} Inventory`)
-      .setDescription(`Page ${inv.page}/${inv.totalPages} • ${inv.total} cards`)
-      .addFields({ name: 'Cards', value: lines.join('\n') || 'No cards.', inline: false });
+    const titleUser = state.ownerLabel || (state.targetUserId ? `<@${state.targetUserId}>` : 'You');
+    const duplicateRows = getDuplicateSummaryForUser(state.targetUserId || interaction.user.id, 1);
+    const embed = buildInventoryListEmbed({ titleUser, inv, duplicateRows });
     const invPage = buildPagedEmbed({
-      title: `${titleUser} Inventory`,
+      title: 'Your Collection',
       pages: Array.from({ length: inv.totalPages }, () => 'page'),
       pageIndex: inv.page - 1,
     });
     embed.setFooter({ text: invPage.pageLabel });
-    const components = buildPagerComponents({
+    const components = [];
+    const selectRow = buildInventorySelectRow(inv.rows);
+    if (selectRow) components.push(selectRow);
+    components.push(...buildPagerComponents({
       pageIndex: inv.page - 1,
       totalPages: inv.totalPages,
       baseCustomId: 'tcg_page:inventory',
-    });
+    }));
     await interaction.update({ embeds: [embed], components, content: '' });
     setPagedViewState(interaction.message?.id, { ...state, page: inv.page });
     return true;
@@ -1711,7 +1775,7 @@ export async function executeTcgPageButton(interaction, { superAdminId } = {}) {
         name: 'Listings',
         value: result.rows.length
           ? result.rows.map((row, idx) =>
-            `${idx + 1}. \`${row.card_id}\` ${row.name} (${row.set_code.toUpperCase()}) • buy ${row.buy_price_credits} • sell ${row.sell_price_credits}`
+            `${idx + 1}. ${row.name} (${resolveSetName(row.set_code)}) • buy ${row.buy_price_credits} • sell ${row.sell_price_credits}`
           ).join('\n')
           : 'No listings matched your filter.',
         inline: false,
@@ -1749,12 +1813,25 @@ export async function executeTcgHubButton(interaction) {
       return true;
     }
     if (action === 'trade_in') {
+      const result = executeTradeInDuplicates(interaction.user.id);
+      const breakdownLines = result.breakdown.length
+        ? result.breakdown.map((row) => `Tier ${row.tier}: ${row.burned} card(s) -> ${row.credits} credits`).join('\n')
+        : 'No duplicate cards found.';
       await interaction.update({
         content: '',
         embeds: [
           new EmbedBuilder()
             .setTitle('Trade In')
-            .setDescription('Coming soon.'),
+            .setDescription(
+              `Traded in **${result.burnedCount}** duplicate card(s).\n` +
+              `Credits gained: **${result.totalCredits}**\n` +
+              `New balance: **${result.walletCredits}**`
+            )
+            .addFields({
+              name: 'Breakdown',
+              value: breakdownLines,
+              inline: false,
+            }),
         ],
         components: buildPacksHubButtons(),
       });
@@ -1794,6 +1871,82 @@ export async function executeTcgHubButton(interaction) {
     }
   } catch (err) {
     await interaction.reply({ content: `Hub action failed: ${err.message}`, ephemeral: true });
+    return true;
+  }
+
+  return false;
+}
+
+export async function executeTcgInventoryComponent(interaction) {
+  const parts = String(interaction.customId || '').split(':');
+  const [prefix, action] = parts;
+  if (prefix !== 'tcg_inv') return false;
+
+  const state = getPagedViewState(interaction.message?.id);
+  if (!state || state.type !== 'inventory' || state.userId !== interaction.user.id) {
+    await interaction.reply({ content: 'Inventory view expired. Run `/inventory` again.', ephemeral: true });
+    return true;
+  }
+
+  try {
+    if (action === 'select') {
+      const selectedId = interaction.values?.[0] || '';
+      const inv = getInventoryPage({
+        userId: state.targetUserId || interaction.user.id,
+        page: state.page || 1,
+        pageSize: 10,
+        setCode: state.setCode || '',
+        nameLike: state.filter || '',
+      });
+      if (!inv.rows.some((row) => row.instance_id === selectedId)) {
+        await interaction.reply({ content: 'That card is no longer on this page. Refresh `/inventory`.', ephemeral: true });
+        return true;
+      }
+      const cardEmbed = await buildInventoryCardEmbed(selectedId);
+      if (!cardEmbed) {
+        await interaction.reply({ content: 'Card not found.', ephemeral: true });
+        return true;
+      }
+      const back = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('tcg_inv:back')
+          .setLabel('Back to list')
+          .setStyle(ButtonStyle.Secondary)
+      );
+      await interaction.update({ content: '', embeds: [cardEmbed], components: [back] });
+      return true;
+    }
+
+    if (action === 'back') {
+      const inv = getInventoryPage({
+        userId: state.targetUserId || interaction.user.id,
+        page: state.page || 1,
+        pageSize: 10,
+        setCode: state.setCode || '',
+        nameLike: state.filter || '',
+      });
+      const duplicateRows = getDuplicateSummaryForUser(state.targetUserId || interaction.user.id, 1);
+      const titleUser = state.ownerLabel || (state.targetUserId ? `<@${state.targetUserId}>` : 'You');
+      const embed = buildInventoryListEmbed({ titleUser, inv, duplicateRows });
+      const invPage = buildPagedEmbed({
+        title: 'Your Collection',
+        pages: Array.from({ length: inv.totalPages }, () => 'page'),
+        pageIndex: inv.page - 1,
+      });
+      embed.setFooter({ text: invPage.pageLabel });
+      const components = [];
+      const selectRow = buildInventorySelectRow(inv.rows);
+      if (selectRow) components.push(selectRow);
+      components.push(...buildPagerComponents({
+        pageIndex: inv.page - 1,
+        totalPages: inv.totalPages,
+        baseCustomId: 'tcg_page:inventory',
+      }));
+      await interaction.update({ content: '', embeds: [embed], components });
+      return true;
+    }
+  } catch (err) {
+    await interaction.reply({ content: `Inventory action failed: ${err.message}`, ephemeral: true });
     return true;
   }
 

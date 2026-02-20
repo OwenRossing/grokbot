@@ -1,5 +1,6 @@
 import {
   executeTcgAutocomplete,
+  executeTcgInventoryComponent,
   executeTcgHubButton,
   executeTcgPackButton,
   executeTcgPageButton,
@@ -23,6 +24,8 @@ export async function handleInteraction(interaction, { inMemoryTurns, pollTimers
     if (commandConfirmHandled) return;
     const handled = await executeTcgTradeButton(wrappedInteraction);
     if (handled) return;
+    const inventoryHandled = await executeTcgInventoryComponent(wrappedInteraction);
+    if (inventoryHandled) return;
     const pagerHandled = await executeTcgPageButton(wrappedInteraction, { superAdminId });
     if (pagerHandled) return;
     const packHandled = await executeTcgPackButton(wrappedInteraction);
@@ -31,6 +34,11 @@ export async function handleInteraction(interaction, { inMemoryTurns, pollTimers
     if (hubHandled) return;
     const revealHandled = await executeTcgRevealButton(wrappedInteraction);
     if (revealHandled) return;
+    return;
+  }
+  if (interaction.isStringSelectMenu()) {
+    const inventoryHandled = await executeTcgInventoryComponent(wrappedInteraction);
+    if (inventoryHandled) return;
     return;
   }
   if (!interaction.isChatInputCommand()) return;

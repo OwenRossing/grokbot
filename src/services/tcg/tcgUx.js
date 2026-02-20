@@ -1,15 +1,13 @@
-function upperSet(setCode = '') {
-  return String(setCode || '').trim().toUpperCase();
-}
+import { formatRarity, resolveSetName } from '../catalog/catalogResolver.js';
 
 export function buildPackOpenHeadline({ openerLabel, setCode }) {
-  return `${openerLabel} opened a ${upperSet(setCode)} booster.`;
+  return `${openerLabel} opened a ${resolveSetName(setCode)} booster.`;
 }
 
 export function formatPackCardLines(cards = []) {
   return cards.map((card, idx) => {
     const stars = '★'.repeat(Math.max(1, Math.min(6, Number(card?.rarity_tier || 1))));
-    return `${idx + 1}. ${card?.name || 'Unknown'} [${card?.rarity || 'Unknown'}] ${stars}`;
+    return `${idx + 1}. ${card?.name || 'Unknown'} [${formatRarity(card?.rarity)}] ${stars}`;
   });
 }
 
@@ -45,7 +43,7 @@ export function buildInventorySummaryText({
   includeRef = false,
 }) {
   const lines = rows.map((row, idx) => {
-    const base = `${idx + 1}. ${row?.name || 'Unknown'} [${row?.rarity || 'Unknown'}] (${row?.set_code || 'set'})`;
+    const base = `${idx + 1}. ${row?.name || 'Unknown'} [${formatRarity(row?.rarity)}] (${resolveSetName(row?.set_code || '')})`;
     if (!includeRef) return base;
     return `${base} • ref ${String(row?.instance_id || '').slice(-6) || 'n/a'}`;
   });
@@ -73,9 +71,9 @@ export function buildCompletionEmbedData(completion) {
   const featuredCard = (completion?.missing || [])[0] || (completion?.rows || []).find((row) => Number(row?.owned_count || 0) > 0) || null;
 
   return {
-    title: `${completion?.setName || upperSet(completion?.setCode)} Completion`,
+    title: `${completion?.setName || resolveSetName(completion?.setCode)} Completion`,
     description:
-      `Set: **${upperSet(completion?.setCode)}**\n` +
+      `Set: **${completion?.setName || resolveSetName(completion?.setCode)}**\n` +
       `Completion: **${completion?.ownedUnique || 0}/${completion?.total || 0}** (${Number(completion?.completionPct || 0).toFixed(1)}%)\n` +
       `${progressBar}`,
     fields: [
