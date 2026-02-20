@@ -1,4 +1,4 @@
-import { EmbedBuilder, PermissionFlagsBits } from 'discord.js';
+import { EmbedBuilder } from 'discord.js';
 import {
   getUserSettings,
   isChannelAllowed,
@@ -41,6 +41,13 @@ import {
 } from '../polls.js';
 import { shouldRecordMemoryMessage } from '../utils/helpers.js';
 import { searchWeb } from '../services/webSearch/index.js';
+import {
+  buildRequestFromMemoryInteraction,
+  buildRequestFromStatusInteraction,
+  executeCommandRequestFromInteraction,
+  parseNaturalCommandRequest,
+} from './commandRuntime.js';
+import { hasInteractionAdminAccess } from '../utils/auth.js';
 
 export async function executeAskCommand(interaction, inMemoryTurns, client) {
   const question = interaction.options.getString('question', true);
@@ -236,151 +243,19 @@ export async function executeGifCommand(interaction) {
 }
 
 export async function executeMemoryCommand(interaction, { superAdminId } = {}) {
-  const action = interaction.options.getString('action', true);
-  const mode = interaction.options.getString('mode');
-  const channel = interaction.options.getChannel('channel');
-  const user = interaction.options.getUser('user');
-  const isSuperAdmin = interaction.user.id === superAdminId;
-  const hasAdminPerms =
-    isSuperAdmin || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
-  const requireAdminGuild = async () => {
-    if (!interaction.inGuild() && !isSuperAdmin) {
-      await interaction.reply({ content: 'Guilds only.', ephemeral: true });
-      return false;
-    }
-    if (!hasAdminPerms) {
-      await interaction.reply({ content: 'Admin only.', ephemeral: true });
-      return false;
-    }
-    return true;
-  };
-
-  if (action.startsWith('user_')) {
-    if (action === 'user_on') {
-      setUserMemory(interaction.user.id, true);
-      await interaction.reply({ content: 'Memory is on.', ephemeral: true });
-      return;
-    }
-    if (action === 'user_off') {
-      setUserMemory(interaction.user.id, false);
-      await interaction.reply({ content: 'Memory is off.', ephemeral: true });
-      return;
-    }
-    if (action === 'user_view') {
-      const summary = viewMemory(interaction.user.id);
-      await interaction.reply({ content: summary, ephemeral: true });
-      return;
-    }
-    if (action === 'user_reset') {
-      forgetUser(interaction.user.id);
-      await interaction.reply({ content: 'Your memory has been reset.', ephemeral: true });
-      return;
-    }
-  }
-
-  if (action.startsWith('channel_')) {
-    if (!await requireAdminGuild()) return;
-    if (action === 'channel_allow') {
-      if (!channel) {
-        await interaction.reply({ content: 'Provide `channel` for this action.', ephemeral: true });
-        return;
-      }
-      allowChannel(channel.id);
-      await interaction.reply({ content: `Allowed memory in <#${channel.id}>.` });
-      return;
-    }
-    if (action === 'channel_deny') {
-      if (!channel) {
-        await interaction.reply({ content: 'Provide `channel` for this action.', ephemeral: true });
-        return;
-      }
-      denyChannel(channel.id);
-      await interaction.reply({ content: `Denied memory in <#${channel.id}>.` });
-      return;
-    }
-    if (action === 'channel_list') {
-      const allRows = listChannels();
-      const guild = interaction.guild;
-      const guildChannelIds = new Set(guild.channels.cache.keys());
-      const rows = allRows.filter((row) => guildChannelIds.has(row.channel_id));
-      if (!rows.length) {
-        await interaction.reply({ content: 'No channels configured in this guild.' });
-        return;
-      }
-      const formatted = rows
-        .map((row) => `• <#${row.channel_id}>: ${row.enabled ? 'allowed' : 'denied'}`)
-        .join('\n');
-      await interaction.reply({ content: formatted });
-      return;
-    }
-    if (action === 'channel_reset') {
-      if (!channel) {
-        await interaction.reply({ content: 'Provide `channel` for this action.', ephemeral: true });
-        return;
-      }
-      resetChannelMemory(channel.id);
-      await interaction.reply({ content: `Memory reset for <#${channel.id}>.` });
-      return;
-    }
-  }
-
-  if (action.startsWith('guild_')) {
-    if (!await requireAdminGuild()) return;
-    if (action === 'guild_scope') {
-      if (!mode) {
-        await interaction.reply({ content: 'Provide `mode` for this action.', ephemeral: true });
-        return;
-      }
-      const safeMode = mode === 'allow_all_visible' ? 'allow_all_visible' : 'allowlist';
-      setGuildMemoryScope(interaction.guildId, safeMode);
-      const label = safeMode === 'allow_all_visible'
-        ? 'allow all visible channels'
-        : 'allowlist only';
-      await interaction.reply({ content: `Memory scope updated: ${label}.` });
-      return;
-    }
-    if (action === 'guild_view') {
-      const settings = getGuildMemorySettings(interaction.guildId);
-      const mode = settings?.scope_mode || 'allowlist';
-      await interaction.reply({ content: `Memory scope: ${mode}`, ephemeral: true });
-      return;
-    }
-    if (action === 'guild_reset') {
-      resetGuildMemory(interaction.guildId);
-      await interaction.reply({ content: 'Guild memory reset.' });
-      return;
-    }
-  }
-
-  if (action === 'admin_reset_user') {
-    if (!await requireAdminGuild()) return;
-    if (!user) {
-      await interaction.reply({ content: 'Provide `user` for this action.', ephemeral: true });
-      return;
-    }
-    forgetUser(user.id);
-    await interaction.reply({ content: `Memory reset for ${user.username}. This action has been logged.` });
-    try {
-      await user.send(
-        `Your conversation memory and personality profile have been reset by an administrator in ${interaction.guild.name}.`
-      );
-    } catch (dmErr) {
-      console.log(`Could not send DM to user ${user.username} about memory reset:`, dmErr.message);
-    }
+  const request = buildRequestFromMemoryInteraction(interaction);
+  if (!request) {
+    await interaction.reply({ content: 'Unknown memory command.', ephemeral: true });
     return;
   }
-
-  await interaction.reply({ content: 'Unknown memory action.', ephemeral: true });
+  await executeCommandRequestFromInteraction({ interaction, request, superAdminId });
 }
 
 export async function executeLobotomizeCommand(interaction) {
   const scope = interaction.options.getString('scope') || 'me';
   
   if (scope === 'all') {
-    // const isSuperAdmin = interaction.user.id === process.env.SUPER_ADMIN_USER_ID;
-    const hasAdminPerms = interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
-    
-    if (!hasAdminPerms) {
+    if (!hasInteractionAdminAccess(interaction, process.env.SUPER_ADMIN_USER_ID)) {
       await interaction.reply({ content: 'Admin only.', ephemeral: true });
       return;
     }
@@ -441,22 +316,34 @@ export async function executeMemoryScopeCommand(interaction) {
 }
 
 export async function executeStatusCommand(interaction) {
-  const sub = interaction.options.getSubcommand();
-  if (sub === 'on') {
-    setGuildStatusVisibility(interaction.guildId, true);
-    await interaction.reply({ content: 'Status sidecar is on for this guild.' });
+  const request = buildRequestFromStatusInteraction(interaction);
+  if (!request) {
+    await interaction.reply({ content: 'Unknown status command.', ephemeral: true });
     return;
   }
-  if (sub === 'off') {
-    setGuildStatusVisibility(interaction.guildId, false);
-    await interaction.reply({ content: 'Status sidecar is off for this guild.' });
+  await executeCommandRequestFromInteraction({
+    interaction,
+    request,
+    superAdminId: process.env.SUPER_ADMIN_USER_ID,
+  });
+}
+
+export async function executeDoCommand(interaction, { superAdminId } = {}) {
+  const instruction = interaction.options.getString('instruction', true);
+  const forcedDryRun = interaction.options.getBoolean('dry_run') || false;
+  const parsed = parseNaturalCommandRequest(instruction, { actorId: interaction.user.id });
+  if (!parsed?.request) {
+    await interaction.reply({
+      content: 'Could not parse a supported command. Try memory/status actions like: enable memory for #channel',
+      ephemeral: true,
+    });
     return;
   }
-  const enabled = isGuildStatusVisibilityEnabled(interaction.guildId);
-  const mode = getGuildMemorySettings(interaction.guildId)?.scope_mode || 'allowlist';
-  await interaction.reply({
-    content: `Status sidecar: ${enabled ? 'on' : 'off'}\nMemory scope: ${mode}`,
-    ephemeral: true,
+  await executeCommandRequestFromInteraction({
+    interaction,
+    request: parsed.request,
+    dryRun: forcedDryRun || parsed.dryRun,
+    superAdminId,
   });
 }
 

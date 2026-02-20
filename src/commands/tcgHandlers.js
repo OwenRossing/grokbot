@@ -1,23 +1,64 @@
-import { PermissionFlagsBits } from 'discord.js';
-import { syncSetFromApi } from '../services/tcg/tcgApi.js';
-import { runPackRevealAnimation } from '../services/tcg/animationEngine.js';
-import { rollPack } from '../services/tcg/packEngine.js';
 import {
-  addCredits,
+  ActionRowBuilder,
+  AttachmentBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+} from 'discord.js';
+import { syncSetFromApi } from '../services/tcg/tcgApi.js';
+import { rollPack, rollPackDetailed } from '../services/tcg/packEngine.js';
+import { renderRevealGif } from '../services/tcg/revealRenderer.js';
+import {
+  browseMarketCatalog,
   createOpenWithMint,
+  claimCooldownPack,
+  claimPack,
+  executeMarketBuy,
+  executeMarketSellDuplicates,
+  executeMarketSellInstances,
+  activateDueLiveEvents,
+  createLiveEvent,
+  deleteLiveEvent,
+  expireEndedLiveEvents,
+  getEffectiveEventEffects,
+  getBuyQuote,
   getCardById,
   getCardInstance,
   getCardValue,
+  getDuplicateSummaryForUser,
+  getOwnedCardAutocompleteChoices,
+  getOwnedInstanceAutocompleteChoices,
+  getSetAutocompleteChoices,
+  getSetCompletionForUser,
+  getTradeAutocompleteChoicesByStatus,
+  getLiveEventAutocompleteChoices,
+  getTradeAutocompleteChoicesForUser,
+  getUnopenedPackAutocompleteChoices,
+  resolveOwnedInstanceIdsForSelection,
+  getSellQuoteForInstances,
+  getSet,
+  getTcgUserSettings,
+  getClaimablePack,
+  getCardsBySet,
   getFreePackAvailability,
   getInventoryPage,
+  grantAdminSealedPacks,
+  listCachedSetCodes,
+  listClaimablePacks,
+  listUnopenedPacks,
+  openUnopenedPackWithMint,
+  setAutoClaimEnabled,
   getTcgOverview,
-  getWallet,
   grantAdminCards,
   grantAdminCredits,
   listAdminEvents,
+  listLiveEvents,
   listTradesForUser,
   parseCsvIds,
+  rollbackSettledTrade,
   setAdminMultiplier,
+  setLiveEventNow,
+  setLiveEventStatus,
   setTradeLocked,
 } from '../services/tcg/tcgStore.js';
 import {
@@ -28,16 +69,34 @@ import {
   getTradeWithExpiry,
   rejectOffer,
 } from '../services/tcg/tradeEngine.js';
-
-function isAdmin(interaction, superAdminId) {
-  return (
-    interaction.user.id === superAdminId ||
-    interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)
-  );
-}
+import {
+  advanceRevealSession,
+  createRevealSession,
+  getRevealSession,
+  setRevealSessionMessage,
+} from '../services/tcg/revealSessionStore.js';
+import { hasInteractionAdminAccess } from '../utils/auth.js';
 
 function money(v) {
   return `$${Number(v || 0).toFixed(2)}`;
+}
+
+function isVerboseTcgMode() {
+  const value = String(process.env.TCG_VERBOSE_MODE || '').trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'on' || value === 'yes';
+}
+
+function getRevealGifMode() {
+  return String(process.env.TCG_REVEAL_GIF_MODE || 'off').trim().toLowerCase();
+}
+
+function shouldRenderRevealGif(card) {
+  const mode = getRevealGifMode();
+  if (mode === 'all') return true;
+  if (mode === 'rare_only' || mode === 'shiny_only') {
+    return Number(card?.rarity_tier || 0) >= 6;
+  }
+  return false;
 }
 
 function summarizeTrade(trade) {
@@ -59,284 +118,1384 @@ async function requireSetCached(setCode) {
   await syncSetFromApi(setCode);
 }
 
-export async function executeTcgCommand(interaction, { superAdminId } = {}) {
-  const action = interaction.options.getString('action', true);
-  const setCode = interaction.options.getString('set_code') || '';
-  const productCode = interaction.options.getString('product_code') || '';
-  const quantity = interaction.options.getInteger('quantity') || 1;
-  const targetUser = interaction.options.getUser('target_user');
-  const csvCards = interaction.options.getString('card_instance_ids') || '';
-  const csvRequestCards = interaction.options.getString('request_instance_ids') || '';
-  const credits = interaction.options.getInteger('credits') || 0;
-  const tradeId = interaction.options.getString('trade_id') || '';
-  const page = interaction.options.getInteger('page') || 1;
-  const filter = interaction.options.getString('filter') || '';
+function parseSetSyncError(err) {
+  const text = String(err?.message || '');
+  if (text.includes('set not found') || text.includes('pokemon api 404')) {
+    return 'Unknown set code. Try `set_code:sv1` (or use `open_free_pack` with default set).';
+  }
+  if (text.includes('pokemon api timeout') || /pokemon api (408|429|5\d\d)/.test(text)) {
+    return 'Pokemon TCG API is temporarily unavailable. Please try again in a minute.';
+  }
+  return null;
+}
 
-  if (action === 'open_pack') {
-    if (!setCode) {
-      await interaction.reply({ content: 'Provide `set_code` (e.g. sv1, swsh12).', ephemeral: true });
-      return;
+function isTransientSetSyncError(err) {
+  const text = String(err?.message || '');
+  return text.includes('pokemon api timeout') || /pokemon api (408|429|5\d\d)/.test(text);
+}
+
+function normalizeSetCode(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function getSetPreviewUrl(setCode) {
+  const set = getSet(setCode);
+  return set?.pack_preview_image_url || set?.logo_image_url || set?.symbol_image_url || '';
+}
+
+function isAdminForCtx(ctx) {
+  return hasInteractionAdminAccess(ctx.interaction, ctx.superAdminId);
+}
+
+function formatActiveEventLines(effects, { setCode = '' } = {}) {
+  if (!effects?.enabled) return ['Events are disabled.'];
+  const lines = [];
+  if (effects.activeByEffect?.bonusPack) {
+    lines.push(`Bonus Pack: +${effects.bonusPackCount} on cooldown claim`);
+  }
+  if (effects.activeByEffect?.dropBoost) {
+    lines.push(`Luck Boost: ${effects.dropBoostMultiplier.toFixed(2)}x`);
+  }
+  if (effects.activeByEffect?.creditBoost) {
+    lines.push(`Credit Boost: ${effects.creditMultiplier.toFixed(2)}x rewards`);
+  }
+  if (!lines.length) {
+    lines.push(setCode ? `No active events for ${setCode.toUpperCase()}.` : 'No active events.');
+  }
+  return lines;
+}
+
+async function findSyncableFallbackSetCode(candidates = []) {
+  const seen = new Set();
+  for (const raw of candidates) {
+    const candidate = normalizeSetCode(raw);
+    if (!candidate || seen.has(candidate)) continue;
+    seen.add(candidate);
+    try {
+      await requireSetCached(candidate);
+      return candidate;
+    } catch {
+      // Try next candidate.
     }
+  }
+  return '';
+}
+
+function buildTcgContext(interaction, superAdminId) {
+  const envDefaultSet = normalizeSetCode(process.env.TCG_DEFAULT_SET_CODE || 'sv1') || 'sv1';
+  return {
+    interaction,
+    superAdminId,
+    action: interaction.options.getString('action', true),
+    defaultSetCode: envDefaultSet,
+    setCode: normalizeSetCode(interaction.options.getString('set_code') || ''),
+    productCode: interaction.options.getString('product_code') || '',
+    quantity: interaction.options.getInteger('quantity') || 1,
+    targetUser: interaction.options.getUser('target_user'),
+    csvCards: interaction.options.getString('card_instance_ids') || '',
+    csvRequestCards: interaction.options.getString('request_instance_ids') || '',
+    credits: interaction.options.getInteger('credits') || 0,
+    requestCredits: interaction.options.getInteger('request_credits') || 0,
+    tradeId: interaction.options.getString('trade_id') || '',
+    packId: interaction.options.getString('pack_id') || '',
+    page: interaction.options.getInteger('page') || 1,
+    filter: interaction.options.getString('filter') || '',
+  };
+}
+
+function buildRevealButtons(session) {
+  const maxIndex = Math.max(0, session.cards.length - 1);
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`tcg_reveal:prev:${session.session_id}`)
+        .setLabel('Previous Card')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(session.current_index <= 0),
+      new ButtonBuilder()
+        .setCustomId(`tcg_reveal:next:${session.session_id}`)
+        .setLabel('Next Card')
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(session.current_index >= maxIndex)
+    ),
+  ];
+}
+
+async function buildRevealPayload({ session, user, setCode, rewards, includeValue = false, renderMedia = true }) {
+  const card = session.cards[session.current_index];
+  if (!card) {
+    return {
+      content: 'No cards were minted.',
+      embeds: [],
+      files: [],
+      components: [],
+    };
+  }
+
+  const cardValue = includeValue ? getCardValue(card) : null;
+  const fields = [{ name: 'Set Opened', value: setCode, inline: true }];
+  if (cardValue) {
+    fields.unshift({ name: 'Estimated Value', value: `${money(cardValue.valueUsd)} (${cardValue.source})`, inline: true });
+  }
+  const embed = new EmbedBuilder()
+    .setTitle(`${card.name}`)
+    .setDescription([
+      `Set: ${card.set_code}`,
+      `Rarity: ${card.rarity || 'Unknown'}`,
+      `Card ${session.current_index + 1}/${session.cards.length}`,
+      rewards
+        ? `Credits earned: ${rewards.earned} (base ${rewards.base} + streak ${rewards.streakBonus})`
+        : null,
+    ].filter(Boolean).join('\n'))
+    .addFields(fields)
+    .setFooter({ text: `Opened by ${user.username}` })
+    .setTimestamp(new Date());
+
+  const render = renderMedia && shouldRenderRevealGif(card) ? await renderRevealGif(card) : { ok: false };
+  let files = [];
+  if (render.ok && render.gifPath) {
+    const attachmentName = `tcg-reveal-${session.session_id}-${session.current_index}.gif`;
+    files = [new AttachmentBuilder(render.gifPath, { name: attachmentName })];
+    embed.setImage(`attachment://${attachmentName}`);
+  } else if (card.image_large || card.image_small) {
+    embed.setImage(card.image_large || card.image_small);
+  }
+
+  return {
+    content: `${user} opened a ${setCode} booster.`,
+    embeds: [embed],
+    files,
+    components: buildRevealButtons(session),
+  };
+}
+
+async function handleOpenPack(ctx) {
+  const { interaction, action, setCode, defaultSetCode, productCode } = ctx;
+  const effectiveSetCode = normalizeSetCode(setCode || defaultSetCode);
+  if (!effectiveSetCode) {
+    await interaction.reply({ content: 'Provide `set_code` (e.g. sv1, swsh12).', ephemeral: false });
+    return;
+  }
+
+  if (action === 'open_free_pack') {
     const availability = getFreePackAvailability(interaction.user.id);
     if (!availability.available) {
       const secs = Math.ceil(availability.availableInMs / 1000);
       await interaction.reply({
         content: `Free pack cooldown active. Try again <t:${Math.floor((Date.now() + availability.availableInMs) / 1000)}:R> (${secs}s).`,
-        ephemeral: true,
+        ephemeral: false,
       });
       return;
     }
-
-    await interaction.deferReply({ ephemeral: false });
-    await requireSetCached(setCode);
-    const pulls = rollPack({ setCode, productCode: productCode || `${setCode}-default` });
-    const created = createOpenWithMint({
-      idempotencyKey: interaction.id,
-      userId: interaction.user.id,
-      guildId: interaction.guildId,
-      setCode,
-      productCode: productCode || `${setCode}-default`,
-      pulls,
-    });
-    await runPackRevealAnimation(interaction, created.result.minted);
-    const rewards = created.result.rewards;
-    const final = `${interaction.user} opened a ${setCode} booster.\n` +
-      `Minted cards: ${created.result.minted.length}\n` +
-      `Credits earned: ${rewards.earned} (base ${rewards.base} + streak ${rewards.streakBonus})`;
-    await interaction.followUp({ content: final });
-    return;
   }
 
-  if (action === 'inventory') {
-    const inv = getInventoryPage({
-      userId: targetUser?.id || interaction.user.id,
-      page,
-      pageSize: 10,
+  await interaction.deferReply({ ephemeral: false });
+  let selectedSetCode = effectiveSetCode;
+  let fallbackNotice = '';
+  try {
+    await requireSetCached(selectedSetCode);
+  } catch (err) {
+    const setErr = parseSetSyncError(err);
+    if (isTransientSetSyncError(err) && getCardsBySet(selectedSetCode).length > 0) {
+      console.warn(`Using cached set data for ${selectedSetCode} due to API outage:`, err.message);
+    } else if (isTransientSetSyncError(err)) {
+      const fallbackSetCode =
+        listCachedSetCodes({ minCards: 20, limit: 1 })[0] ||
+        listCachedSetCodes({ minCards: 1, limit: 1 })[0] ||
+        '';
+      if (fallbackSetCode) {
+        selectedSetCode = fallbackSetCode;
+        fallbackNotice =
+          `Pokemon TCG API is currently unavailable for \`${effectiveSetCode}\`, so I used cached set \`${selectedSetCode}\` instead.`;
+        console.warn(
+          `Falling back from set ${effectiveSetCode} to cached set ${selectedSetCode} due to API outage:`,
+          err.message
+        );
+      } else if (setErr) {
+        await interaction.editReply({ content: setErr, embeds: [], components: [], files: [] });
+        return;
+      } else {
+        throw err;
+      }
+    } else if (setErr) {
+      // For free packs, be lenient with misconfigured defaults and fall back to cached sets.
+      if (action === 'open_free_pack') {
+        const fallbackFromApi = await findSyncableFallbackSetCode([
+          defaultSetCode,
+          'sv1',
+          'sv2',
+          'sv3',
+          'swsh12',
+        ]);
+        if (fallbackFromApi) {
+          selectedSetCode = fallbackFromApi;
+          fallbackNotice =
+            `Default free-pack set \`${effectiveSetCode}\` is invalid, so I used \`${selectedSetCode}\` instead.`;
+        } else {
+          const fallbackSetCode =
+            listCachedSetCodes({ minCards: 20, limit: 1 })[0] ||
+            listCachedSetCodes({ minCards: 1, limit: 1 })[0] ||
+            '';
+          if (fallbackSetCode) {
+            selectedSetCode = fallbackSetCode;
+            fallbackNotice =
+              `Default free-pack set \`${effectiveSetCode}\` is invalid, so I used cached set \`${selectedSetCode}\` instead.`;
+          } else {
+            await interaction.editReply({
+              content:
+                `${setErr}\nNo fallback set is available (live or cached). Check \`TCG_DEFAULT_SET_CODE\` (e.g. \`sv1\`) and \`POKEMONTCG_API_BASE_URL\` (expected \`https://api.pokemontcg.io/v2\`).`,
+              embeds: [],
+              components: [],
+              files: [],
+            });
+            return;
+          }
+        }
+      } else {
+        await interaction.editReply({ content: setErr, embeds: [], components: [], files: [] });
+        return;
+      }
+    } else {
+      throw err;
+    }
+  }
+
+  const drop = rollPackDetailed({
+    userId: interaction.user.id,
+    setCode: selectedSetCode,
+    productCode: productCode || `${selectedSetCode}-default`,
+  });
+  await openPackFromPulls({
+    interaction,
+    pulls: drop.pulls,
+    setCode: selectedSetCode,
+    productCode: productCode || `${selectedSetCode}-default`,
+    profileVersion: drop.profileVersion,
+    dropAudit: drop.audit,
+    pityTriggered: drop.pityTriggered,
+    fallbackNotice,
+  });
+}
+
+async function openPackFromPulls({
+  interaction,
+  pulls,
+  setCode,
+  productCode,
+  profileVersion = '',
+  dropAudit = {},
+  pityTriggered = false,
+  fallbackNotice = '',
+}) {
+  const created = createOpenWithMint({
+    idempotencyKey: interaction.id,
+    userId: interaction.user.id,
+    guildId: interaction.guildId,
+    setCode,
+    productCode: productCode || `${setCode}-default`,
+    pulls,
+    profileVersion,
+    dropAudit,
+    pityTriggered,
+  });
+
+  const revealSession = createRevealSession({
+    userId: interaction.user.id,
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    cards: created.result.minted,
+  });
+
+  const payload = await buildRevealPayload({
+    session: revealSession,
+    user: interaction.user,
+    setCode,
+    rewards: created.result.rewards,
+    includeValue: isVerboseTcgMode(),
+    renderMedia: false,
+  });
+  if (fallbackNotice) {
+    payload.content = `${fallbackNotice}\n${payload.content}`;
+  }
+  const previewImage = getSetPreviewUrl(setCode);
+  if (previewImage && payload.embeds?.[0]) {
+    payload.embeds[0].setThumbnail(previewImage);
+  }
+
+  const sent = await interaction.editReply(payload);
+  setRevealSessionMessage(revealSession.session_id, sent.id);
+  void upgradeRevealMediaAsync({
+    interaction,
+    revealSession,
+    setCode,
+    user: interaction.user,
+  });
+  return created;
+}
+
+async function upgradeRevealMediaAsync({ interaction, revealSession, setCode, user }) {
+  const card = revealSession.cards[revealSession.current_index];
+  if (!card || !shouldRenderRevealGif(card)) return;
+  const timeoutMs = Math.max(250, Number.parseInt(process.env.TCG_REVEAL_MEDIA_UPGRADE_TIMEOUT_MS || '2500', 10));
+  const timeout = new Promise((resolve) => {
+    setTimeout(() => resolve({ ok: false, reason: 'timeout' }), timeoutMs);
+  });
+  try {
+    const render = await Promise.race([renderRevealGif(card), timeout]);
+    if (!render?.ok || !render.gifPath) return;
+    const attachmentName = `tcg-reveal-${revealSession.session_id}-${revealSession.current_index}.gif`;
+    const payload = await buildRevealPayload({
+      session: revealSession,
+      user,
       setCode,
-      nameLike: filter,
+      rewards: null,
+      includeValue: isVerboseTcgMode(),
+      renderMedia: false,
     });
-    const lines = inv.rows.map((row, idx) =>
-      `${idx + 1}. \`${row.instance_id}\` ${row.name} [${row.rarity || 'Unknown'}] (${row.set_code})`
+    payload.files = [new AttachmentBuilder(render.gifPath, { name: attachmentName })];
+    payload.embeds[0].setImage(`attachment://${attachmentName}`);
+    await interaction.editReply(payload);
+  } catch {
+    // Non-blocking enhancement; ignore failures.
+  }
+}
+
+function paginateRows(allRows = [], page = 1, pageSize = 10) {
+  const safePage = Math.max(1, Number(page || 1));
+  const total = allRows.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const boundedPage = Math.min(safePage, totalPages);
+  const start = (boundedPage - 1) * pageSize;
+  const rows = allRows.slice(start, start + pageSize);
+  return { rows, total, totalPages, page: boundedPage, start };
+}
+
+function buildPackQueueButtons(
+  view,
+  page,
+  {
+    showClaimCooldown = false,
+    showClaimTop = false,
+    showOpenTop = false,
+    autoClaimEnabled = false,
+  } = {}
+) {
+  const row = new ActionRowBuilder();
+  row.addComponents(
+    new ButtonBuilder().setCustomId(`tcg_pack:view_claim:${page}`).setLabel('View Claimable').setStyle(view === 'claim' ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`tcg_pack:view_open:${page}`).setLabel('View Ready To Open').setStyle(view === 'open' ? ButtonStyle.Primary : ButtonStyle.Secondary),
+  );
+  if (showClaimTop) {
+    row.addComponents(
+      new ButtonBuilder().setCustomId(`tcg_pack:claim_top:${page}`).setLabel('Claim Next Pack').setStyle(ButtonStyle.Success),
     );
-    const titleUser = targetUser ? `${targetUser.username}` : 'You';
-    await interaction.reply({
-      content:
-        `${titleUser} inventory page ${inv.page}/${inv.totalPages} (${inv.total} cards)\n` +
-        `${lines.join('\n') || 'No cards.'}`,
-      ephemeral: true,
-    });
+  } else if (showClaimCooldown) {
+    row.addComponents(
+      new ButtonBuilder().setCustomId(`tcg_pack:claim_cooldown:${page}`).setLabel('Claim Free Pack').setStyle(ButtonStyle.Success),
+    );
+  } else if (showOpenTop) {
+    row.addComponents(
+      new ButtonBuilder().setCustomId(`tcg_pack:open_top:${page}`).setLabel('Open Next Pack').setStyle(ButtonStyle.Success),
+    );
+  }
+  row.addComponents(
+    new ButtonBuilder()
+      .setCustomId(`tcg_pack:auto_claim_toggle:${page}:${view}`)
+      .setLabel(`Auto-Claim: ${autoClaimEnabled ? 'ON' : 'OFF'}`)
+      .setStyle(autoClaimEnabled ? ButtonStyle.Success : ButtonStyle.Secondary)
+  );
+  return [row];
+}
+
+async function sendOrEdit(interaction, payload) {
+  if (interaction.deferred || interaction.replied) {
+    return interaction.editReply(payload);
+  }
+  return interaction.reply(payload);
+}
+
+async function renderClaimQueue(interaction, { page = 1 } = {}) {
+  const all = listClaimablePacks(interaction.user.id, 100);
+  const pagination = paginateRows(all, page, 10);
+  const availability = getFreePackAvailability(interaction.user.id);
+  const userSettings = getTcgUserSettings(interaction.user.id);
+  const previewSetCode = pagination.rows[0]?.set_code || '';
+  const eventEffects = getEffectiveEventEffects({ setCode: previewSetCode });
+  const embed = new EmbedBuilder()
+    .setTitle('Pack Claim Queue')
+    .setDescription(`Page ${pagination.page}/${pagination.totalPages} • ${pagination.total} claimable packs`)
+    .addFields(
+      {
+        name: 'Free Pack Cooldown',
+        value: availability.available
+          ? 'Ready now. Press **Claim Free Pack**.'
+          : `Available <t:${Math.floor(availability.nextAt / 1000)}:R>`,
+        inline: false,
+      },
+      {
+        name: 'Claimable Packs',
+        value: pagination.rows.length
+          ? pagination.rows.map((row, idx) =>
+            `${pagination.start + idx + 1}. \`${row.pack_id}\` • **${row.set_code.toUpperCase()}** • ${row.grant_source || 'claimable'}`
+          ).join('\n')
+          : 'No claimable packs.',
+        inline: false,
+      },
+      {
+        name: 'Auto-Claim',
+        value: userSettings.auto_claim_enabled ? 'Enabled' : 'Disabled',
+        inline: false,
+      },
+      {
+        name: 'Active Events',
+        value: formatActiveEventLines(eventEffects, { setCode: previewSetCode }).join('\n'),
+        inline: false,
+      }
+    );
+  const topPreview = pagination.rows[0] ? getSetPreviewUrl(pagination.rows[0].set_code) : '';
+  if (topPreview) embed.setThumbnail(topPreview);
+
+  return sendOrEdit(interaction, {
+    content: '',
+    embeds: [embed],
+    components: buildPackQueueButtons('claim', pagination.page, {
+      showClaimCooldown: availability.available,
+      showClaimTop: pagination.rows.length > 0,
+      autoClaimEnabled: userSettings.auto_claim_enabled,
+    }),
+    ephemeral: false,
+  });
+}
+
+async function renderOpenQueue(interaction, { page = 1 } = {}) {
+  const all = listUnopenedPacks(interaction.user.id, 100);
+  const pagination = paginateRows(all, page, 10);
+  const availability = getFreePackAvailability(interaction.user.id);
+  const userSettings = getTcgUserSettings(interaction.user.id);
+  const previewSetCode = pagination.rows[0]?.set_code || '';
+  const eventEffects = getEffectiveEventEffects({ setCode: previewSetCode });
+  const embed = new EmbedBuilder()
+    .setTitle('Ready To Open')
+    .setDescription(`Page ${pagination.page}/${pagination.totalPages} • ${pagination.total} unopened packs`)
+    .addFields(
+      {
+        name: 'Next Free Offer',
+        value: availability.available
+          ? 'A free pack is ready in claim queue.'
+          : `<t:${Math.floor(availability.nextAt / 1000)}:R>`,
+        inline: false,
+      },
+      {
+        name: 'Unopened Packs',
+        value: pagination.rows.length
+          ? pagination.rows.map((row, idx) =>
+            `${pagination.start + idx + 1}. \`${row.pack_id}\` • **${row.set_code.toUpperCase()}** • ${row.grant_source || 'unopened'}`
+          ).join('\n')
+          : 'No unopened packs.',
+        inline: false,
+      },
+      {
+        name: 'Auto-Claim',
+        value: userSettings.auto_claim_enabled ? 'Enabled' : 'Disabled',
+        inline: false,
+      },
+      {
+        name: 'Active Events',
+        value: formatActiveEventLines(eventEffects, { setCode: previewSetCode }).join('\n'),
+        inline: false,
+      }
+    );
+  const topPreview = pagination.rows[0] ? getSetPreviewUrl(pagination.rows[0].set_code) : '';
+  if (topPreview) embed.setThumbnail(topPreview);
+
+  return sendOrEdit(interaction, {
+    content: '',
+    embeds: [embed],
+    components: buildPackQueueButtons('open', pagination.page, {
+      showOpenTop: pagination.rows.length > 0,
+      autoClaimEnabled: userSettings.auto_claim_enabled,
+    }),
+    ephemeral: false,
+  });
+}
+
+async function openClaimedPackById(interaction, packId) {
+  const pack = getClaimablePack(packId, interaction.user.id);
+  if (!pack || pack.status !== 'unopened') {
+    await sendOrEdit(interaction, { content: 'Pack not found or already opened.', components: [], ephemeral: false });
     return;
   }
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply({ ephemeral: false });
+  }
+  await requireSetCached(pack.set_code);
+  const drop = rollPackDetailed({
+    userId: interaction.user.id,
+    setCode: pack.set_code,
+    productCode: pack.product_code || `${pack.set_code}-default`,
+  });
+  const opened = openUnopenedPackWithMint({
+    idempotencyKey: interaction.id,
+    userId: interaction.user.id,
+    guildId: interaction.guildId,
+    packId: pack.pack_id,
+    pulls: drop.pulls,
+    profileVersion: drop.profileVersion,
+    dropAudit: drop.audit,
+    pityTriggered: drop.pityTriggered,
+  });
+  const revealSession = createRevealSession({
+    userId: interaction.user.id,
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    cards: opened.result.minted,
+  });
+  const payload = await buildRevealPayload({
+    session: revealSession,
+    user: interaction.user,
+    setCode: pack.set_code,
+    rewards: opened.result.rewards,
+    includeValue: isVerboseTcgMode(),
+    renderMedia: false,
+  });
+  const previewImage = getSetPreviewUrl(pack.set_code);
+  if (previewImage && payload.embeds?.[0]) {
+    payload.embeds[0].setThumbnail(previewImage);
+  }
+  const sent = await interaction.editReply(payload);
+  setRevealSessionMessage(revealSession.session_id, sent.id);
+  void upgradeRevealMediaAsync({ interaction, revealSession, setCode: pack.set_code, user: interaction.user });
+}
 
-  if (action === 'card_view') {
-    if (!csvCards) {
-      await interaction.reply({ content: 'Provide `card_instance_ids` with one instance id.', ephemeral: true });
-      return;
-    }
-    const id = parseCsvIds(csvCards)[0];
-    const card = getCardInstance(id);
-    if (!card) {
-      await interaction.reply({ content: 'Card instance not found.', ephemeral: true });
-      return;
-    }
-    const value = getCardValue(card);
-    await interaction.reply({
-      content:
-        `Instance: \`${card.instance_id}\`\n` +
-        `Card: ${card.name}\n` +
-        `Rarity: ${card.rarity}\n` +
-        `Set: ${card.set_code}\n` +
-        `Owner: <@${card.owner_user_id}>\n` +
-        `State: ${card.state}\n` +
-        `Value: ${money(value.valueUsd)} (${value.source})`,
-      ephemeral: true,
-    });
+async function handleInventory(ctx) {
+  const { interaction, targetUser, page, setCode, filter } = ctx;
+  if (targetUser && !isAdminForCtx(ctx)) {
+    await interaction.reply({ content: 'Admin only for viewing other users inventory.', ephemeral: false });
     return;
   }
+  const inv = getInventoryPage({
+    userId: targetUser?.id || interaction.user.id,
+    page,
+    pageSize: 10,
+    setCode,
+    nameLike: filter,
+  });
+  const lines = inv.rows.map((row, idx) =>
+    `${idx + 1}. ${row.name} [${row.rarity || 'Unknown'}] (${row.set_code}) • ref ${String(row.instance_id).slice(-6)}`
+  );
+  const titleUser = targetUser ? `${targetUser.username}` : 'You';
+  await interaction.reply({
+    content:
+      `${titleUser} inventory page ${inv.page}/${inv.totalPages} (${inv.total} cards)\n` +
+      `${lines.join('\n') || 'No cards.'}`,
+    ephemeral: false,
+  });
+}
 
-  if (action === 'collection_stats') {
-    const overview = getTcgOverview(targetUser?.id || interaction.user.id);
-    await interaction.reply({
-      content:
-        `Cards: ${overview.inventoryCount}\n` +
-        `Credits: ${overview.wallet.credits}\n` +
-        `Opened packs: ${overview.wallet.opened_count}\n` +
-        `Streak: ${overview.wallet.streak_days}\n` +
-        `Free pack: ${overview.cooldown.available ? 'ready' : `<t:${Math.floor(overview.cooldown.nextAt / 1000)}:R>`}`,
-      ephemeral: true,
-    });
+async function handleCardView(ctx) {
+  const { interaction, csvCards, cardSelection, isPublic } = ctx;
+  const id = cardSelection || parseCsvIds(csvCards)[0];
+  if (!id) {
+    await interaction.reply({ content: 'Choose a card from autocomplete, or use advanced `card_instance_ids`.', ephemeral: false });
     return;
   }
+  const card = getCardInstance(id);
+  if (!card) {
+    await interaction.reply({ content: 'Card instance not found.', ephemeral: false });
+    return;
+  }
+  const cardMeta = getCardById(card.card_id) || {};
+  const value = getCardValue(cardMeta?.card_id ? cardMeta : card);
+  const embed = new EmbedBuilder()
+    .setTitle(card.name || 'Card')
+    .setDescription(`Set ${String(card.set_code || '').toUpperCase()} • ${card.rarity || 'Unknown'}`)
+    .addFields(
+      { name: 'Value', value: `${money(value.valueUsd)} (${value.source})`, inline: true },
+      { name: 'State', value: card.state || 'owned', inline: true },
+      { name: 'Ref', value: String(card.instance_id || '').slice(-8) || 'n/a', inline: true }
+    );
+  const image = cardMeta.image_large || cardMeta.image_small || '';
+  if (image) embed.setImage(image);
+  await interaction.reply({ embeds: [embed], ephemeral: false });
+}
 
-  if (action === 'trade_offer') {
-    if (!interaction.inGuild()) {
-      await interaction.reply({ content: 'Trade offers are guild-only.', ephemeral: true });
-      return;
-    }
-    if (!targetUser) {
-      await interaction.reply({ content: 'Provide `target_user`.', ephemeral: true });
-      return;
-    }
-    const offerCards = parseCsvIds(csvCards);
-    const reqCards = parseCsvIds(csvRequestCards);
-    if (!offerCards.length) {
-      await interaction.reply({ content: 'Provide offered `card_instance_ids`.', ephemeral: true });
-      return;
-    }
-    const trade = createOffer({
-      guildId: interaction.guildId,
-      channelId: interaction.channelId,
-      offeredByUserId: interaction.user.id,
-      offeredToUserId: targetUser.id,
-      offerCardIds: offerCards,
-      requestCardIds: reqCards,
-      offerCredits: Math.max(0, credits),
-      requestCredits: 0,
+async function handleCollectionStats(ctx) {
+  const { interaction, targetUser } = ctx;
+  if (targetUser && !isAdminForCtx(ctx)) {
+    await interaction.reply({ content: 'Admin only for viewing other users stats.', ephemeral: false });
+    return;
+  }
+  const overview = getTcgOverview(targetUser?.id || interaction.user.id);
+  const eventSummary = formatActiveEventLines(overview.events || {}).join(' | ');
+  await interaction.reply({
+    content:
+      `Cards: ${overview.inventoryCount}\n` +
+      `Credits: ${overview.wallet.credits}\n` +
+      `Opened packs: ${overview.wallet.opened_count}\n` +
+      `Streak: ${overview.wallet.streak_days}\n` +
+      `Free pack: ${overview.cooldown.available ? 'ready' : `<t:${Math.floor(overview.cooldown.nextAt / 1000)}:R>`}\n` +
+      `Events: ${eventSummary}`,
+    ephemeral: false,
+  });
+}
+
+async function handleTradeOffer(ctx) {
+  const { interaction, targetUser, csvCards, csvRequestCards, credits, requestCredits } = ctx;
+  if (!interaction.inGuild()) {
+    await interaction.reply({ content: 'Trade offers are guild-only.', ephemeral: false });
+    return;
+  }
+  if (!targetUser) {
+    await interaction.reply({ content: 'Provide `target_user`.', ephemeral: false });
+    return;
+  }
+  const offerCards = parseCsvIds(csvCards);
+  const reqCards = parseCsvIds(csvRequestCards);
+  if (!offerCards.length) {
+    await interaction.reply({ content: 'Provide offered `card_instance_ids`.', ephemeral: false });
+    return;
+  }
+  const trade = createOffer({
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    offeredByUserId: interaction.user.id,
+    offeredToUserId: targetUser.id,
+    offerCardIds: offerCards,
+    requestCardIds: reqCards,
+    offerCredits: Math.max(0, credits),
+    requestCredits: Math.max(0, requestCredits),
+  });
+  await interaction.reply({
+    content: `${interaction.user} offered a trade to ${targetUser}.\n${summarizeTrade(trade)}`,
+    components: buildTradeButtons(trade.trade_id),
+    ephemeral: false,
+  });
+}
+
+async function handleTradeAccept(ctx) {
+  const { interaction, tradeId } = ctx;
+  if (!tradeId) {
+    await interaction.reply({ content: 'Provide `trade_id`.', ephemeral: false });
+    return;
+  }
+  const settled = acceptOffer(tradeId, interaction.user.id);
+  await interaction.reply({ content: `Trade settled.\n${summarizeTrade(settled)}`, ephemeral: false });
+}
+
+async function handleTradeReject(ctx) {
+  const { interaction, tradeId } = ctx;
+  if (!tradeId) {
+    await interaction.reply({ content: 'Provide `trade_id`.', ephemeral: false });
+    return;
+  }
+  const result = rejectOffer(tradeId, interaction.user.id);
+  await interaction.reply({ content: `Trade rejected.\n${summarizeTrade(result)}`, ephemeral: false });
+}
+
+async function handleTradeCancel(ctx) {
+  const { interaction, tradeId } = ctx;
+  if (!tradeId) {
+    await interaction.reply({ content: 'Provide `trade_id`.', ephemeral: false });
+    return;
+  }
+  const result = cancelOffer(tradeId, interaction.user.id);
+  await interaction.reply({ content: `Trade cancelled.\n${summarizeTrade(result)}`, ephemeral: false });
+}
+
+async function handleTradeView(ctx) {
+  const { interaction } = ctx;
+  const trades = listTradesForUser(interaction.user.id);
+  if (!trades.length) {
+    await interaction.reply({ content: 'No trades found.', ephemeral: false });
+    return;
+  }
+  const lines = trades.slice(0, 10).map((t) =>
+    `\`${t.trade_id}\` ${t.status} <@${t.offered_by_user_id}> -> <@${t.offered_to_user_id}>`
+  );
+  await interaction.reply({ content: lines.join('\n'), ephemeral: false });
+}
+
+async function handleMarketValue(ctx) {
+  const { interaction, csvCards, cardSelection } = ctx;
+  const rawId = cardSelection || parseCsvIds(csvCards)[0];
+  if (!rawId) {
+    await interaction.reply({ content: 'Provide `card` (autocomplete) or `card_instance_ids`.', ephemeral: false });
+    return;
+  }
+  const instance = getCardInstance(rawId);
+  const card = instance || getCardById(rawId);
+  if (!card) {
+    await interaction.reply({ content: 'Card not found.', ephemeral: false });
+    return;
+  }
+  const value = getCardValue(card);
+  const name = card.name || card.card_id;
+  await interaction.reply({ content: `${name} value: ${money(value.valueUsd)} (${value.source})`, ephemeral: false });
+}
+
+async function handleMarketBrowse(ctx) {
+  const { interaction, page, setCode, filter } = ctx;
+  const result = browseMarketCatalog({
+    page,
+    pageSize: 10,
+    setCode,
+    nameLike: filter,
+  });
+  const embed = new EmbedBuilder()
+    .setTitle('Singles Market')
+    .setDescription(`Page ${result.page}/${result.totalPages} • ${result.total} cards listed`)
+    .addFields({
+      name: 'Listings',
+      value: result.rows.length
+        ? result.rows.map((row, idx) =>
+          `${idx + 1}. \`${row.card_id}\` ${row.name} (${row.set_code.toUpperCase()}) • buy ${row.buy_price_credits} • sell ${row.sell_price_credits}`
+        ).join('\n')
+        : 'No listings matched your filter.',
+      inline: false,
     });
+  const firstImage = result.rows[0]?.image_small || result.rows[0]?.image_large || '';
+  if (firstImage) embed.setThumbnail(firstImage);
+  await interaction.reply({ embeds: [embed], ephemeral: false });
+}
+
+async function handleMarketQuoteBuy(ctx) {
+  const { interaction, cardId, quantity } = ctx;
+  if (!cardId) {
+    await interaction.reply({ content: 'Provide `card_id`.', ephemeral: false });
+    return;
+  }
+  const quote = getBuyQuote(cardId, quantity);
+  await interaction.reply({
+    content: `Buy quote: ${quote.quantity}x ${quote.cardName} at ${quote.unitPriceCredits} each = ${quote.totalCredits} credits.`,
+    ephemeral: false,
+  });
+}
+
+async function handleMarketBuy(ctx) {
+  const { interaction, cardId, quantity } = ctx;
+  if (!cardId) {
+    await interaction.reply({ content: 'Provide `card_id`.', ephemeral: false });
+    return;
+  }
+  const purchase = executeMarketBuy({
+    userId: interaction.user.id,
+    cardId,
+    quantity,
+    idempotencyKey: interaction.id,
+  });
+  await interaction.reply({
+    content: `Bought ${purchase.quantity}x ${purchase.cardName} for ${purchase.totalCredits} credits.`,
+    ephemeral: false,
+  });
+}
+
+async function handleMarketQuoteSell(ctx) {
+  const { interaction, csvCards, cardSelection, quantity } = ctx;
+  if (cardSelection) {
+    const resolved = resolveOwnedInstanceIdsForSelection(interaction.user.id, cardSelection, quantity || 1);
+    const quote = getSellQuoteForInstances(interaction.user.id, resolved.instanceIds);
     await interaction.reply({
-      content: `${interaction.user} offered a trade to ${targetUser}.\n${summarizeTrade(trade)}`,
-      components: buildTradeButtons(trade.trade_id),
+      content:
+        `Sell quote: ${quote.quantity}x ${resolved.cardName} for ${quote.totalCredits} credits total.\n` +
+        `(You own ${resolved.availableCount} copy/copies.)`,
       ephemeral: false,
     });
     return;
   }
-
-  if (action === 'trade_accept') {
-    if (!tradeId) {
-      await interaction.reply({ content: 'Provide `trade_id`.', ephemeral: true });
-      return;
-    }
-    const settled = acceptOffer(tradeId, interaction.user.id);
-    await interaction.reply({ content: `Trade settled.\n${summarizeTrade(settled)}`, ephemeral: false });
+  const ids = parseCsvIds(csvCards);
+  if (!ids.length) {
+    await interaction.reply({ content: 'Provide `card` (autocomplete) or `card_instance_ids`.', ephemeral: false });
     return;
   }
+  const quote = getSellQuoteForInstances(interaction.user.id, ids);
+  await interaction.reply({
+    content: `Sell quote: ${quote.quantity} card(s) for ${quote.totalCredits} credits total.`,
+    ephemeral: false,
+  });
+}
 
-  if (action === 'trade_reject') {
-    if (!tradeId) {
-      await interaction.reply({ content: 'Provide `trade_id`.', ephemeral: true });
-      return;
-    }
-    const result = rejectOffer(tradeId);
-    await interaction.reply({ content: `Trade rejected.\n${summarizeTrade(result)}`, ephemeral: false });
-    return;
-  }
-
-  if (action === 'trade_cancel') {
-    if (!tradeId) {
-      await interaction.reply({ content: 'Provide `trade_id`.', ephemeral: true });
-      return;
-    }
-    const result = cancelOffer(tradeId);
-    await interaction.reply({ content: `Trade cancelled.\n${summarizeTrade(result)}`, ephemeral: true });
-    return;
-  }
-
-  if (action === 'trade_view') {
-    const trades = listTradesForUser(interaction.user.id);
-    if (!trades.length) {
-      await interaction.reply({ content: 'No trades found.', ephemeral: true });
-      return;
-    }
-    const lines = trades.slice(0, 10).map((t) =>
-      `\`${t.trade_id}\` ${t.status} <@${t.offered_by_user_id}> -> <@${t.offered_to_user_id}>`
-    );
-    await interaction.reply({ content: lines.join('\n'), ephemeral: true });
-    return;
-  }
-
-  if (action === 'market_value') {
-    if (!csvCards) {
-      await interaction.reply({ content: 'Provide one card id or instance id in `card_instance_ids`.', ephemeral: true });
-      return;
-    }
-    const rawId = parseCsvIds(csvCards)[0];
-    const instance = getCardInstance(rawId);
-    const card = instance || getCardById(rawId);
-    if (!card) {
-      await interaction.reply({ content: 'Card not found.', ephemeral: true });
-      return;
-    }
-    const value = getCardValue(card);
-    const name = card.name || card.card_id;
-    await interaction.reply({ content: `${name} value: ${money(value.valueUsd)} (${value.source})`, ephemeral: true });
-    return;
-  }
-
-  if (action === 'admin_grant_pack') {
-    if (!isAdmin(interaction, superAdminId)) {
-      await interaction.reply({ content: 'Admin only.', ephemeral: true });
-      return;
-    }
-    if (!targetUser || !setCode) {
-      await interaction.reply({ content: 'Provide `target_user` and `set_code`.', ephemeral: true });
-      return;
-    }
-    await requireSetCached(setCode);
-    const pulls = rollPack({ setCode, productCode: productCode || `${setCode}-default` });
-    const minted = grantAdminCards(interaction.user.id, targetUser.id, pulls.map((p) => p.card_id), 'admin_pack_grant');
-    await interaction.reply({ content: `Granted ${minted.length} cards to ${targetUser}.`, ephemeral: false });
-    return;
-  }
-
-  if (action === 'admin_grant_credits') {
-    if (!isAdmin(interaction, superAdminId)) {
-      await interaction.reply({ content: 'Admin only.', ephemeral: true });
-      return;
-    }
-    if (!targetUser || !credits) {
-      await interaction.reply({ content: 'Provide `target_user` and non-zero `credits`.', ephemeral: true });
-      return;
-    }
-    const wallet = grantAdminCredits(interaction.user.id, targetUser.id, credits, 'admin_grant_credits');
-    await interaction.reply({ content: `Updated ${targetUser} credits: ${wallet.credits}.`, ephemeral: false });
-    return;
-  }
-
-  if (action === 'admin_set_multiplier') {
-    if (!isAdmin(interaction, superAdminId)) {
-      await interaction.reply({ content: 'Admin only.', ephemeral: true });
-      return;
-    }
-    if (!filter || !setCode) {
-      await interaction.reply({ content: 'Use `filter` as key and `set_code` as value (e.g. key=credit_multiplier, value=1.5).', ephemeral: true });
-      return;
-    }
-    setAdminMultiplier(interaction.user.id, filter, setCode);
-    await interaction.reply({ content: `Multiplier updated: ${filter}=${setCode}.`, ephemeral: true });
-    return;
-  }
-
-  if (action === 'admin_trade_lock') {
-    if (!isAdmin(interaction, superAdminId)) {
-      await interaction.reply({ content: 'Admin only.', ephemeral: true });
-      return;
-    }
-    const enabled = String(filter || '').toLowerCase() === 'on' || String(filter || '').toLowerCase() === 'true';
-    setTradeLocked(interaction.user.id, enabled);
-    await interaction.reply({ content: `Trading lock is now ${enabled ? 'ON' : 'OFF'}.`, ephemeral: false });
-    return;
-  }
-
-  if (action === 'admin_audit') {
-    if (!isAdmin(interaction, superAdminId)) {
-      await interaction.reply({ content: 'Admin only.', ephemeral: true });
-      return;
-    }
-    const rows = listAdminEvents(Math.max(1, Math.min(50, quantity || 20)));
-    const lines = rows.map((r) => `\`${r.event_id}\` ${r.action} by <@${r.admin_user_id}> at <t:${Math.floor(r.created_at / 1000)}:R>`);
-    await interaction.reply({ content: lines.join('\n') || 'No admin events.', ephemeral: true });
-    return;
-  }
-
-  if (action === 'admin_rollback_trade') {
+async function handleMarketSell(ctx) {
+  const { interaction, csvCards, cardSelection, quantity } = ctx;
+  if (cardSelection) {
+    const resolved = resolveOwnedInstanceIdsForSelection(interaction.user.id, cardSelection, quantity || 1);
+    const sold = executeMarketSellInstances({ userId: interaction.user.id, instanceIds: resolved.instanceIds });
     await interaction.reply({
-      content: 'Rollback is reserved for v2 safety checks. For now, use admin grants to remediate.',
-      ephemeral: true,
+      content:
+        `Sold ${sold.quantity}x ${resolved.cardName} for ${sold.totalCredits} credits.\n` +
+        `(You had ${resolved.availableCount} copy/copies.)`,
+      ephemeral: false,
     });
     return;
   }
+  const ids = parseCsvIds(csvCards);
+  if (!ids.length) {
+    await interaction.reply({ content: 'Provide `card` (autocomplete) or `card_instance_ids`.', ephemeral: false });
+    return;
+  }
+  const sold = executeMarketSellInstances({ userId: interaction.user.id, instanceIds: ids });
+  await interaction.reply({
+    content: `Sold ${sold.quantity} card(s) for ${sold.totalCredits} credits.`,
+    ephemeral: false,
+  });
+}
 
-  await interaction.reply({ content: 'Unknown TCG action.', ephemeral: true });
+async function handleMarketSellDuplicates(ctx) {
+  const { interaction, keepPerCard, maxTier, credits, confirm } = ctx;
+  if (String(confirm || '').toLowerCase() !== 'yes') {
+    const duplicates = getDuplicateSummaryForUser(interaction.user.id, keepPerCard);
+    const preview = duplicates.slice(0, 10).map((row) =>
+      `${row.name}: ${row.owned_count} owned`
+    ).join('\n');
+    await interaction.reply({
+      content:
+        `Preview only. Use \`confirm:yes\` to execute.\n` +
+        `${preview || 'No duplicates found.'}`,
+      ephemeral: false,
+    });
+    return;
+  }
+  const sold = executeMarketSellDuplicates({
+    userId: interaction.user.id,
+    keepPerCard,
+    maxTier,
+    maxUnitValue: Math.max(0, Number(credits || 999999)),
+  });
+  await interaction.reply({
+    content: `Auto-sold ${sold.quantity} duplicate card(s) for ${sold.totalCredits} credits.`,
+    ephemeral: false,
+  });
+}
+
+function requireAdmin(ctx) {
+  if (!hasInteractionAdminAccess(ctx.interaction, ctx.superAdminId)) {
+    throw new Error('Admin only.');
+  }
+}
+
+async function handleAdminGrantPack(ctx) {
+  const { interaction, targetUser, setCode, productCode } = ctx;
+  requireAdmin(ctx);
+  if (!targetUser || !setCode) {
+    await interaction.reply({ content: 'Provide `target_user` and `set_code`.', ephemeral: false });
+    return;
+  }
+  await requireSetCached(setCode);
+  const pulls = rollPack({ setCode, productCode: productCode || `${setCode}-default` });
+  const minted = grantAdminCards(interaction.user.id, targetUser.id, pulls.map((p) => p.card_id), 'admin_pack_grant');
+  await interaction.reply({ content: `Granted ${minted.length} cards to ${targetUser}.`, ephemeral: false });
+}
+
+async function handleAdminGrantSealedPack(ctx) {
+  const { interaction, targetUser, setCode, productCode, quantity } = ctx;
+  requireAdmin(ctx);
+  if (!targetUser || !setCode) {
+    await interaction.reply({ content: 'Provide `target_user` and `set_code`.', ephemeral: false });
+    return;
+  }
+  await requireSetCached(setCode);
+  const granted = grantAdminSealedPacks(interaction.user.id, targetUser.id, {
+    setCode,
+    productCode: productCode || `${setCode}-default`,
+    quantity: Math.max(1, Math.min(100, Number(quantity || 1))),
+  });
+  const preview = granted.slice(0, 5).map((p) => `\`${p.pack_id}\``).join(', ');
+  await interaction.reply({
+    content:
+      `Granted ${granted.length} unopened pack(s) to ${targetUser}.\n` +
+      (preview ? `Pack IDs: ${preview}${granted.length > 5 ? ', ...' : ''}` : ''),
+    ephemeral: false,
+  });
+}
+
+async function handleAdminGrantCredits(ctx) {
+  const { interaction, targetUser, credits } = ctx;
+  requireAdmin(ctx);
+  if (!targetUser || !credits) {
+    await interaction.reply({ content: 'Provide `target_user` and non-zero `credits`.', ephemeral: false });
+    return;
+  }
+  const wallet = grantAdminCredits(interaction.user.id, targetUser.id, credits, 'admin_grant_credits');
+  await interaction.reply({ content: `Updated ${targetUser} credits: ${wallet.credits}.`, ephemeral: false });
+}
+
+async function handleAdminSetMultiplier(ctx) {
+  const { interaction, key, value } = ctx;
+  requireAdmin(ctx);
+  if (!key || !value) {
+    await interaction.reply({ content: 'Use `key` and `value` (e.g. key=credit_multiplier, value=1.5).', ephemeral: false });
+    return;
+  }
+  setAdminMultiplier(interaction.user.id, key, value);
+  await interaction.reply({ content: `Multiplier updated: ${key}=${value}.`, ephemeral: false });
+}
+
+async function handleAdminTradeLock(ctx) {
+  const { interaction, filter } = ctx;
+  requireAdmin(ctx);
+  const enabled = String(filter || '').toLowerCase() === 'on' || String(filter || '').toLowerCase() === 'true';
+  setTradeLocked(interaction.user.id, enabled);
+  await interaction.reply({ content: `Trading lock is now ${enabled ? 'ON' : 'OFF'}.`, ephemeral: false });
+}
+
+async function handleAdminAudit(ctx) {
+  const { interaction, quantity } = ctx;
+  requireAdmin(ctx);
+  const rows = listAdminEvents(Math.max(1, Math.min(50, quantity || 20)));
+  const lines = rows.map((r) => `\`${r.event_id}\` ${r.action} by <@${r.admin_user_id}> at <t:${Math.floor(r.created_at / 1000)}:R>`);
+  await interaction.reply({ content: lines.join('\n') || 'No admin events.', ephemeral: false });
+}
+
+async function handleAdminRollbackTrade(ctx) {
+  const { interaction, tradeId } = ctx;
+  requireAdmin(ctx);
+  if (!tradeId) {
+    await interaction.reply({ content: 'Provide `trade_id`.', ephemeral: false });
+    return;
+  }
+  const rolled = rollbackSettledTrade(interaction.user.id, tradeId);
+  await interaction.reply({ content: `Trade rolled back.\n${summarizeTrade(rolled)}`, ephemeral: false });
+}
+
+function formatEventTime(ts) {
+  if (!Number.isFinite(Number(ts)) || Number(ts) <= 0) return 'n/a';
+  return `<t:${Math.floor(Number(ts) / 1000)}:F> (<t:${Math.floor(Number(ts) / 1000)}:R>)`;
+}
+
+async function handleAdminEventCreate(ctx) {
+  const {
+    interaction,
+    eventName,
+    eventEffectType,
+    eventEffectValue,
+    setCode,
+    startUnix,
+    endUnix,
+    eventEnabled,
+  } = ctx;
+  requireAdmin(ctx);
+  const created = createLiveEvent(interaction.user.id, {
+    name: eventName,
+    effectType: eventEffectType,
+    effectValue: eventEffectValue,
+    setScope: setCode || '',
+    startAt: Number(startUnix || 0) * 1000,
+    endAt: Number(endUnix || 0) * 1000,
+    enabled: eventEnabled !== false,
+  });
+  await interaction.reply({
+    content:
+      `Created event \`${created.event_id}\` (${created.name}).\n` +
+      `Effect: ${created.effect_type}=${created.effect_value}\n` +
+      `Scope: ${created.set_scope ? created.set_scope.toUpperCase() : 'GLOBAL'}\n` +
+      `Status: ${created.status}\n` +
+      `Start: ${formatEventTime(created.start_at)}\n` +
+      `End: ${formatEventTime(created.end_at)}`,
+    ephemeral: false,
+  });
+}
+
+async function handleAdminEventList(ctx) {
+  const { interaction, eventStatus, quantity } = ctx;
+  requireAdmin(ctx);
+  const rows = listLiveEvents({ status: eventStatus || 'all', limit: Math.max(1, Math.min(100, quantity || 20)) });
+  const lines = rows.map((row) =>
+    `\`${row.event_id}\` ${row.name} • ${row.effect_type}=${row.effect_value} • ${row.status} • ${row.set_scope ? row.set_scope.toUpperCase() : 'GLOBAL'} • <t:${Math.floor(row.end_at / 1000)}:R>`
+  );
+  await interaction.reply({ content: lines.join('\n') || 'No live events.', ephemeral: false });
+}
+
+async function handleAdminEventEnable(ctx) {
+  const { interaction, eventId } = ctx;
+  requireAdmin(ctx);
+  const updated = setLiveEventStatus(interaction.user.id, eventId, 'active');
+  await interaction.reply({
+    content: `Event enabled: \`${updated.event_id}\` (${updated.name}) now ${updated.status}.`,
+    ephemeral: false,
+  });
+}
+
+async function handleAdminEventDisable(ctx) {
+  const { interaction, eventId } = ctx;
+  requireAdmin(ctx);
+  const updated = setLiveEventStatus(interaction.user.id, eventId, 'disabled');
+  await interaction.reply({
+    content: `Event disabled: \`${updated.event_id}\` (${updated.name}).`,
+    ephemeral: false,
+  });
+}
+
+async function handleAdminEventDelete(ctx) {
+  const { interaction, eventId } = ctx;
+  requireAdmin(ctx);
+  deleteLiveEvent(interaction.user.id, eventId);
+  await interaction.reply({ content: `Deleted event \`${eventId}\`.`, ephemeral: false });
+}
+
+async function handleAdminEventNow(ctx) {
+  const { interaction, eventId, eventMode } = ctx;
+  requireAdmin(ctx);
+  if (eventMode === 'start_now') {
+    setLiveEventNow(interaction.user.id, eventId, 'start_now');
+    const activated = activateDueLiveEvents(interaction.user.id);
+    await interaction.reply({
+      content: `Start-now applied for \`${eventId}\`. Activated events in this tick: ${activated}.`,
+      ephemeral: false,
+    });
+    return;
+  }
+  if (eventMode === 'stop_now') {
+    setLiveEventNow(interaction.user.id, eventId, 'stop_now');
+    const expired = expireEndedLiveEvents(interaction.user.id);
+    await interaction.reply({
+      content: `Stop-now applied for \`${eventId}\`. Auto-expired events in this tick: ${expired}.`,
+      ephemeral: false,
+    });
+    return;
+  }
+  await interaction.reply({ content: 'Use mode: start_now or stop_now.', ephemeral: false });
+}
+
+function safeOption(interaction, kind, name, fallback) {
+  try {
+    const value = interaction.options?.[kind]?.(name);
+    return value ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function buildCommandCtx(interaction, superAdminId) {
+  return {
+    interaction,
+    superAdminId,
+    setCode: normalizeSetCode(
+      safeOption(interaction, 'getString', 'set_code', '') ||
+      safeOption(interaction, 'getString', 'type', '')
+    ),
+    productCode: safeOption(interaction, 'getString', 'product_code', ''),
+    quantity: safeOption(interaction, 'getInteger', 'quantity', 1) || 1,
+    targetUser: safeOption(interaction, 'getUser', 'target_user', null),
+    csvCards: safeOption(interaction, 'getString', 'card_instance_ids', ''),
+    csvRequestCards: safeOption(interaction, 'getString', 'request_instance_ids', ''),
+    credits: safeOption(interaction, 'getInteger', 'credits', 0) || 0,
+    requestCredits: safeOption(interaction, 'getInteger', 'request_credits', 0) || 0,
+    tradeId: safeOption(interaction, 'getString', 'trade_id', ''),
+    packId: safeOption(interaction, 'getString', 'pack_id', ''),
+    cardId: safeOption(interaction, 'getString', 'card_id', ''),
+    cardSelection: safeOption(interaction, 'getString', 'card', ''),
+    packSelection: safeOption(interaction, 'getString', 'pack', ''),
+    page: safeOption(interaction, 'getInteger', 'page', 1) || 1,
+    filter: safeOption(interaction, 'getString', 'filter', ''),
+    key: safeOption(interaction, 'getString', 'key', '') || safeOption(interaction, 'getString', 'filter', ''),
+    value: safeOption(interaction, 'getString', 'value', '') || safeOption(interaction, 'getString', 'set_code', ''),
+    eventId: safeOption(interaction, 'getString', 'event_id', ''),
+    eventName: safeOption(interaction, 'getString', 'name', ''),
+    eventEffectType: safeOption(interaction, 'getString', 'effect_type', ''),
+    eventEffectValue: safeOption(interaction, 'getString', 'value', ''),
+    eventStatus: safeOption(interaction, 'getString', 'status', 'all') || 'all',
+    eventEnabled: safeOption(interaction, 'getBoolean', 'enabled', null),
+    eventMode: safeOption(interaction, 'getString', 'mode', ''),
+    startUnix: safeOption(interaction, 'getInteger', 'start_unix', 0) || 0,
+    endUnix: safeOption(interaction, 'getInteger', 'end_unix', 0) || 0,
+    isPublic: safeOption(interaction, 'getBoolean', 'public', false) || false,
+    keepPerCard: safeOption(interaction, 'getInteger', 'keep_per_card', 2) || 2,
+    maxTier: safeOption(interaction, 'getInteger', 'max_tier', 3) || 3,
+    confirm: safeOption(interaction, 'getString', 'confirm', ''),
+    defaultSetCode: normalizeSetCode(process.env.TCG_DEFAULT_SET_CODE || 'sv1') || 'sv1',
+  };
+}
+
+async function safeExecuteTcg(interaction, run, label) {
+  try {
+    await run();
+  } catch (err) {
+    console.error(`TCG command error (${label}):`, {
+      userId: interaction.user?.id,
+      guildId: interaction.guildId,
+      error: err?.message || String(err),
+    });
+    const message = err.message === 'Admin only.' ? 'Admin only.' : `TCG command failed: ${err.message}`;
+    if (interaction.deferred || interaction.replied) {
+      await interaction.followUp({ content: message, ephemeral: false });
+    } else {
+      await interaction.reply({ content: message, ephemeral: false });
+    }
+  }
+}
+
+export async function executeClaimPackCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => {
+    const ctx = buildCommandCtx(interaction, superAdminId);
+    await renderClaimQueue(interaction, { page: ctx.page });
+  }, 'claim-pack');
+}
+
+export async function executeOpenPackCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => {
+    const ctx = buildCommandCtx(interaction, superAdminId);
+    if (ctx.packId) {
+      await openClaimedPackById(interaction, ctx.packId);
+      return;
+    }
+    await renderOpenQueue(interaction, { page: ctx.page });
+  }, 'open-pack');
+}
+
+export async function executeViewUnopenedPacksCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => {
+    const ctx = buildCommandCtx(interaction, superAdminId);
+    await renderOpenQueue(interaction, { page: ctx.page });
+  }, 'view-unopened-packs');
+}
+
+export async function executeViewPackCompletionCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => {
+    const ctx = buildCommandCtx(interaction, superAdminId);
+    const requestedSetCode = normalizeSetCode(ctx.packSelection || ctx.setCode || '');
+    if (!requestedSetCode) {
+      await interaction.reply({ content: 'Provide a pack/set via `pack`.', ephemeral: false });
+      return;
+    }
+
+    try {
+      await requireSetCached(requestedSetCode);
+    } catch (err) {
+      const setErr = parseSetSyncError(err);
+      if (isTransientSetSyncError(err) && getCardsBySet(requestedSetCode).length > 0) {
+        console.warn(`Using cached set data for ${requestedSetCode} due to API outage:`, err.message);
+      } else if (setErr) {
+        await interaction.reply({ content: setErr, ephemeral: false });
+        return;
+      } else {
+        throw err;
+      }
+    }
+
+    const completion = getSetCompletionForUser(interaction.user.id, requestedSetCode);
+    if (!completion.total) {
+      await interaction.reply({
+        content: `No cards cached for set \`${requestedSetCode}\` yet. Try opening/claiming from that set first.`,
+        ephemeral: false,
+      });
+      return;
+    }
+
+    const progressSlots = 10;
+    const filled = Math.max(0, Math.min(progressSlots, Math.round((completion.ownedUnique / completion.total) * progressSlots)));
+    const progressBar = `${'█'.repeat(filled)}${'░'.repeat(Math.max(0, progressSlots - filled))}`;
+    const missingPreview = completion.missing
+      .slice(0, 12)
+      .map((row) => `• ${row.name}`)
+      .join('\n');
+    const dupPreview = completion.duplicates
+      .slice(0, 8)
+      .map((row) => `• ${row.name} x${row.owned_count}`)
+      .join('\n');
+
+    const embed = new EmbedBuilder()
+      .setTitle(`${completion.setName} Completion`)
+      .setDescription(
+        `Set: **${completion.setCode.toUpperCase()}**\n` +
+        `Completion: **${completion.ownedUnique}/${completion.total}** (${completion.completionPct.toFixed(1)}%)\n` +
+        `${progressBar}`
+      )
+      .addFields(
+        {
+          name: 'Owned Unique',
+          value: `${completion.ownedUnique}`,
+          inline: true,
+        },
+        {
+          name: 'Missing',
+          value: `${completion.missingCount}`,
+          inline: true,
+        },
+        {
+          name: 'Duplicates',
+          value: `${completion.duplicates.length}`,
+          inline: true,
+        },
+        {
+          name: 'Missing Preview',
+          value: missingPreview || 'No missing cards. Set complete.',
+          inline: false,
+        },
+        {
+          name: 'Duplicate Preview',
+          value: dupPreview || 'No duplicates yet.',
+          inline: false,
+        }
+      );
+    const featuredCard = completion.missing[0] || completion.rows.find((row) => Number(row.owned_count || 0) > 0) || null;
+    if (featuredCard) {
+      const featuredImage = featuredCard.image_large || featuredCard.image_small || '';
+      if (featuredImage) embed.setImage(featuredImage);
+      embed.addFields({
+        name: 'Featured Card',
+        value: `${featuredCard.name} (${Number(featuredCard.owned_count || 0) > 0 ? 'Owned' : 'Missing'})`,
+        inline: false,
+      });
+    }
+    const preview = getSetPreviewUrl(completion.setCode);
+    if (preview) embed.setThumbnail(preview);
+    await interaction.reply({ embeds: [embed], ephemeral: false });
+  }, 'view-pack-completion');
+}
+
+export async function executeAutoClaimPackCommand(interaction) {
+  await safeExecuteTcg(interaction, async () => {
+    const mode = String(safeOption(interaction, 'getString', 'mode', 'status') || 'status').toLowerCase();
+    if (mode === 'status') {
+      const settings = getTcgUserSettings(interaction.user.id);
+      await interaction.reply({
+        content: `Auto-claim is ${settings.auto_claim_enabled ? 'ON' : 'OFF'}.`,
+        ephemeral: false,
+      });
+      return;
+    }
+    if (mode === 'on' || mode === 'off') {
+      const updated = setAutoClaimEnabled(interaction.user.id, mode === 'on');
+      await interaction.reply({
+        content: `Auto-claim is now ${updated.auto_claim_enabled ? 'ON' : 'OFF'}.`,
+        ephemeral: false,
+      });
+      return;
+    }
+    await interaction.reply({ content: 'Use mode: on, off, or status.', ephemeral: false });
+  }, 'auto-claim-pack');
+}
+
+export async function executeInventoryCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleInventory(buildCommandCtx(interaction, superAdminId)), 'inventory');
+}
+export async function executeCardViewCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleCardView(buildCommandCtx(interaction, superAdminId)), 'card-view');
+}
+export async function executeCollectionStatsCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleCollectionStats(buildCommandCtx(interaction, superAdminId)), 'collection-stats');
+}
+export async function executeTradeOfferCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleTradeOffer(buildCommandCtx(interaction, superAdminId)), 'trade-offer');
+}
+export async function executeTradeAcceptCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleTradeAccept(buildCommandCtx(interaction, superAdminId)), 'trade-accept');
+}
+export async function executeTradeRejectCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleTradeReject(buildCommandCtx(interaction, superAdminId)), 'trade-reject');
+}
+export async function executeTradeCancelCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleTradeCancel(buildCommandCtx(interaction, superAdminId)), 'trade-cancel');
+}
+export async function executeTradeViewCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleTradeView(buildCommandCtx(interaction, superAdminId)), 'trade-view');
+}
+export async function executeMarketValueCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleMarketValue(buildCommandCtx(interaction, superAdminId)), 'market-value');
+}
+export async function executeMarketBrowseCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleMarketBrowse(buildCommandCtx(interaction, superAdminId)), 'market-browse');
+}
+export async function executeMarketQuoteBuyCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleMarketQuoteBuy(buildCommandCtx(interaction, superAdminId)), 'market-quote-buy');
+}
+export async function executeMarketBuyCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleMarketBuy(buildCommandCtx(interaction, superAdminId)), 'market-buy');
+}
+export async function executeMarketQuoteSellCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleMarketQuoteSell(buildCommandCtx(interaction, superAdminId)), 'market-quote-sell');
+}
+export async function executeMarketSellCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleMarketSell(buildCommandCtx(interaction, superAdminId)), 'market-sell');
+}
+export async function executeMarketSellDuplicatesCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleMarketSellDuplicates(buildCommandCtx(interaction, superAdminId)), 'market-sell-duplicates');
+}
+export async function executeAdminGrantPackCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleAdminGrantSealedPack(buildCommandCtx(interaction, superAdminId)), 'admin-grant-pack');
+}
+export async function executeAdminGrantCreditsCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleAdminGrantCredits(buildCommandCtx(interaction, superAdminId)), 'admin-grant-credits');
+}
+export async function executeAdminSetMultiplierCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleAdminSetMultiplier(buildCommandCtx(interaction, superAdminId)), 'admin-set-multiplier');
+}
+export async function executeAdminTradeLockCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleAdminTradeLock(buildCommandCtx(interaction, superAdminId)), 'admin-trade-lock');
+}
+export async function executeAdminEventCreateCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleAdminEventCreate(buildCommandCtx(interaction, superAdminId)), 'admin-event-create');
+}
+export async function executeAdminEventListCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleAdminEventList(buildCommandCtx(interaction, superAdminId)), 'admin-event-list');
+}
+export async function executeAdminEventEnableCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleAdminEventEnable(buildCommandCtx(interaction, superAdminId)), 'admin-event-enable');
+}
+export async function executeAdminEventDisableCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleAdminEventDisable(buildCommandCtx(interaction, superAdminId)), 'admin-event-disable');
+}
+export async function executeAdminEventDeleteCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleAdminEventDelete(buildCommandCtx(interaction, superAdminId)), 'admin-event-delete');
+}
+export async function executeAdminEventNowCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleAdminEventNow(buildCommandCtx(interaction, superAdminId)), 'admin-event-now');
+}
+export async function executeAdminAuditCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleAdminAudit(buildCommandCtx(interaction, superAdminId)), 'admin-audit');
+}
+export async function executeAdminRollbackTradeCommand(interaction, { superAdminId } = {}) {
+  await safeExecuteTcg(interaction, async () => handleAdminRollbackTrade(buildCommandCtx(interaction, superAdminId)), 'admin-rollback-trade');
+}
+
+export async function executeTcgAutocomplete(interaction) {
+  const commandName = String(interaction.commandName || '');
+  const focused = interaction.options.getFocused(true);
+  if (!focused) return false;
+  const query = String(focused.value || '');
+
+  if (focused.name === 'card') {
+    if (commandName === 'market-sell' || commandName === 'market-quote-sell' || commandName === 'market-value') {
+      const choices = getOwnedCardAutocompleteChoices(interaction.user.id, query, 25);
+      await interaction.respond(choices.slice(0, 25));
+      return true;
+    }
+    if (commandName === 'card-view') {
+      const choices = getOwnedInstanceAutocompleteChoices(interaction.user.id, query, 25);
+      await interaction.respond(choices.slice(0, 25));
+      return true;
+    }
+  }
+
+  if (focused.name === 'pack_id' && commandName === 'open-pack') {
+    const choices = getUnopenedPackAutocompleteChoices(interaction.user.id, query, 25);
+    await interaction.respond(choices.slice(0, 25));
+    return true;
+  }
+
+  if (focused.name === 'pack' && commandName === 'view-pack-completion') {
+    const choices = getSetAutocompleteChoices(query, 25);
+    await interaction.respond(choices.slice(0, 25));
+    return true;
+  }
+
+  if (focused.name === 'trade_id') {
+    if (commandName === 'trade-accept' || commandName === 'trade-reject' || commandName === 'trade-cancel') {
+      const choices = getTradeAutocompleteChoicesForUser(interaction.user.id, query, 25);
+      await interaction.respond(choices.slice(0, 25));
+      return true;
+    }
+    if (commandName === 'admin-rollback-trade') {
+      const choices = getTradeAutocompleteChoicesByStatus('settled', query, 25);
+      await interaction.respond(choices.slice(0, 25));
+      return true;
+    }
+  }
+  if (focused.name === 'event_id' && commandName.startsWith('admin-event-')) {
+    const choices = getLiveEventAutocompleteChoices(query, 25);
+    await interaction.respond(choices.slice(0, 25));
+    return true;
+  }
+  return false;
 }
 
 export async function executeTcgTradeButton(interaction) {
@@ -346,7 +1505,7 @@ export async function executeTcgTradeButton(interaction) {
   try {
     const trade = getTradeWithExpiry(tradeId);
     if (!trade) {
-      await interaction.reply({ content: 'Trade not found.', ephemeral: true });
+      await interaction.reply({ content: 'Trade not found.', ephemeral: false });
       return true;
     }
     if (action === 'accept') {
@@ -359,21 +1518,129 @@ export async function executeTcgTradeButton(interaction) {
     }
     if (action === 'reject') {
       if (interaction.user.id !== trade.offered_to_user_id) {
-        await interaction.reply({ content: 'Only the target user can reject this trade.', ephemeral: true });
+        await interaction.reply({ content: 'Only the target user can reject this trade.', ephemeral: false });
         return true;
       }
-      const rejected = rejectOffer(tradeId);
+      const rejected = rejectOffer(tradeId, interaction.user.id);
       await interaction.update({
         content: `Trade rejected.\n${summarizeTrade(rejected)}`,
         components: [],
       });
       return true;
     }
-    await interaction.reply({ content: 'Unknown trade action.', ephemeral: true });
+    await interaction.reply({ content: 'Unknown trade action.', ephemeral: false });
     return true;
   } catch (err) {
-    await interaction.reply({ content: `Trade action failed: ${err.message}`, ephemeral: true });
+    await interaction.reply({ content: `Trade action failed: ${err.message}`, ephemeral: false });
     return true;
   }
 }
 
+export async function executeTcgPackButton(interaction) {
+  const [prefix, action, rawPage, rawView] = String(interaction.customId || '').split(':');
+  if (prefix !== 'tcg_pack') return false;
+  const page = Math.max(1, Number(rawPage || 1));
+
+  try {
+    if (action === 'view_claim') {
+      await interaction.deferUpdate();
+      await renderClaimQueue(interaction, { page });
+      return true;
+    }
+    if (action === 'view_open') {
+      await interaction.deferUpdate();
+      await renderOpenQueue(interaction, { page });
+      return true;
+    }
+    if (action === 'claim_top') {
+      const top = listClaimablePacks(interaction.user.id, 1)[0];
+      if (!top) {
+        await interaction.reply({ content: 'No claimable packs right now.', ephemeral: false });
+        return true;
+      }
+      claimPack(top.pack_id, interaction.user.id);
+      await interaction.deferUpdate();
+      await renderClaimQueue(interaction, { page });
+      return true;
+    }
+    if (action === 'claim_cooldown') {
+      try {
+        claimCooldownPack(interaction.user.id);
+      } catch (err) {
+        await interaction.reply({ content: err.message === 'cooldown not ready' ? 'Cooldown pack is not ready yet.' : `Claim failed: ${err.message}`, ephemeral: false });
+        return true;
+      }
+      await interaction.deferUpdate();
+      await renderClaimQueue(interaction, { page });
+      return true;
+    }
+    if (action === 'open_top') {
+      const top = listUnopenedPacks(interaction.user.id, 1)[0];
+      if (!top) {
+        await interaction.reply({ content: 'No unopened packs right now.', ephemeral: false });
+        return true;
+      }
+      await openClaimedPackById(interaction, top.pack_id);
+      return true;
+    }
+    if (action === 'auto_claim_toggle') {
+      const current = getTcgUserSettings(interaction.user.id);
+      setAutoClaimEnabled(interaction.user.id, !current.auto_claim_enabled);
+      await interaction.deferUpdate();
+      if (rawView === 'open') {
+        await renderOpenQueue(interaction, { page });
+      } else {
+        await renderClaimQueue(interaction, { page });
+      }
+      return true;
+    }
+    await interaction.reply({ content: 'Unknown pack action.', ephemeral: false });
+    return true;
+  } catch (err) {
+    await interaction.reply({ content: `Pack action failed: ${err.message}`, ephemeral: false });
+    return true;
+  }
+}
+
+export async function executeTcgRevealButton(interaction) {
+  const [prefix, action, sessionId] = String(interaction.customId || '').split(':');
+  if (prefix !== 'tcg_reveal' || !sessionId) return false;
+
+  const session = getRevealSession(sessionId);
+  if (!session) {
+    await interaction.reply({ content: 'Reveal session not found or expired.', ephemeral: false });
+    return true;
+  }
+  if (interaction.user.id !== session.user_id) {
+    await interaction.reply({ content: 'Only the pack opener can control this reveal.', ephemeral: false });
+    return true;
+  }
+
+  try {
+    await interaction.deferUpdate();
+    const dir = action === 'prev' ? -1 : 1;
+    const nextSession = advanceRevealSession(sessionId, dir);
+    const payload = await buildRevealPayload({
+      session: nextSession,
+      user: interaction.user,
+      setCode: nextSession.cards[nextSession.current_index]?.set_code || 'set',
+      rewards: null,
+      includeValue: isVerboseTcgMode(),
+      renderMedia: false,
+    });
+    await interaction.editReply(payload);
+    return true;
+  } catch (err) {
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply({
+        content: `Reveal unavailable: ${err.message}`,
+        embeds: [],
+        components: [],
+        files: [],
+      });
+    } else {
+      await interaction.reply({ content: `Reveal unavailable: ${err.message}`, ephemeral: false });
+    }
+    return true;
+  }
+}

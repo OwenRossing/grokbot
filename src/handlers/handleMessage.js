@@ -7,6 +7,7 @@ import { createPoll, getPollByMessageId, recordVote, removeVote } from '../polls
 import { getReplyContext } from '../services/media.js';
 import { routeIntent } from '../services/intentRouter.js';
 import { shouldRecordMemoryMessage } from '../utils/helpers.js';
+import { tryHandleNaturalCommand } from '../commands/naturalCommandRouter.js';
 
 export async function handleMessage({ client, message, inMemoryTurns }) {
   if (message.author.bot) return;
@@ -39,6 +40,11 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
   if (!isDirect && !mentioned && !autoreplyEnabled) return;
 
   const content = isDirect ? message.content.trim() : mentioned ? stripMention(message.content, client.user.id) : message.content.trim();
+
+  const naturalHandled = await tryHandleNaturalCommand({ message, content });
+  if (naturalHandled) {
+    return;
+  }
   
   // Try to route simple cache-backed intents (owner, find user, role members, random)
   if (content && message.guildId) {

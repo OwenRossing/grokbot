@@ -24,5 +24,11 @@ export function shouldAutoWebSearch(prompt = '') {
   if (/(latest|today|current|news|search|look up|lookup|what happened|price|release date)/i.test(value)) {
     return true;
   }
+  const asksFactQuestion =
+    /\?$/.test(value.trim()) &&
+    /(who|what|when|where|why|how|which|is|are|does|do|can)\b/i.test(value);
+  if (asksFactQuestion) {
+    return true;
+  }
   return false;
 }

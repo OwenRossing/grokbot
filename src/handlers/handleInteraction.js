@@ -1,36 +1,37 @@
-import { PermissionFlagsBits } from 'discord.js';
-import {
-  executeAskCommand,
-  executePollCommand,
-  executeGifCommand,
-  executeMemoryCommand,
-  executeLobotomizeCommand,
-  executePurgeCommand,
-  executeServerInfoCommand,
-  executeMyDataCommand,
-  executeAutoreplyCommand,
-  executeStatusCommand,
-  executeSearchCommand,
-} from '../commands/handlers.js';
-import { executeTcgCommand, executeTcgTradeButton } from '../commands/tcgHandlers.js';
+import { executeTcgAutocomplete, executeTcgPackButton, executeTcgRevealButton, executeTcgTradeButton } from '../commands/tcgHandlers.js';
+import { buildInteractionCommandRouter } from '../commands/interactionRouter.js';
+import { executeCommandConfirmationButton } from '../commands/commandRuntime.js';
+import { hasInteractionAdminAccess, isSuperAdminUser } from '../utils/auth.js';
 
 export async function handleInteraction(interaction, { inMemoryTurns, pollTimers, client, superAdminId }) {
+  if (interaction.isAutocomplete()) {
+    const handled = await executeTcgAutocomplete(interaction);
+    if (handled) return;
+    return;
+  }
   if (interaction.isButton()) {
+    const commandConfirmHandled = await executeCommandConfirmationButton(interaction, { superAdminId });
+    if (commandConfirmHandled) return;
     const handled = await executeTcgTradeButton(interaction);
     if (handled) return;
+    const packHandled = await executeTcgPackButton(interaction);
+    if (packHandled) return;
+    const revealHandled = await executeTcgRevealButton(interaction);
+    if (revealHandled) return;
     return;
   }
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName } = interaction;
-  const isSuperAdmin = interaction.user.id === superAdminId;
-  const hasAdminPerms =
-    isSuperAdmin || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
-
-  // Commands that require guild context
-  const guildOnlyCommands = ['status', 'purge', 'serverinfo'];
-
-  if (guildOnlyCommands.includes(commandName)) {
+  const isSuperAdmin = isSuperAdminUser(interaction.user.id, superAdminId);
+  const hasAdminPerms = hasInteractionAdminAccess(interaction, superAdminId);
+  const router = buildInteractionCommandRouter({ inMemoryTurns, pollTimers, client, superAdminId });
+  const command = router[commandName];
+  if (!command) {
+    await interaction.reply({ content: 'Unknown command.', ephemeral: true });
+    return;
+  }
+  if (command.requiresGuildAdmin) {
     if (!interaction.inGuild() && !isSuperAdmin) {
       await interaction.reply({ content: 'Guilds only.', ephemeral: true });
       return;
@@ -42,34 +43,7 @@ export async function handleInteraction(interaction, { inMemoryTurns, pollTimers
   }
 
   try {
-    switch (commandName) {
-      case 'ask':
-        return await executeAskCommand(interaction, inMemoryTurns, client);
-      case 'poll':
-        return await executePollCommand(interaction, pollTimers);
-      case 'gif':
-        return await executeGifCommand(interaction);
-      case 'memory':
-        return await executeMemoryCommand(interaction, { superAdminId });
-      case 'purge':
-        return await executePurgeCommand(interaction);
-      case 'serverinfo':
-        return await executeServerInfoCommand(interaction);
-      case 'lobotomize':
-        return await executeLobotomizeCommand(interaction);
-      case 'mydata':
-        return await executeMyDataCommand(interaction);
-      case 'autoreply':
-        return await executeAutoreplyCommand(interaction);
-      case 'status':
-        return await executeStatusCommand(interaction);
-      case 'search':
-        return await executeSearchCommand(interaction);
-      case 'tcg':
-        return await executeTcgCommand(interaction, { superAdminId });
-      default:
-        await interaction.reply({ content: 'Unknown command.', ephemeral: true });
-    }
+    return await command.execute(interaction);
   } catch (err) {
     console.error(`Error handling command ${commandName}:`, err);
     if (interaction.deferred || interaction.replied) {

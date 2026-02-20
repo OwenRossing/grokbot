@@ -120,7 +120,7 @@ export function getImagePolicy({ guildId, userId }) {
 export function evaluateImagePrompt(prompt, policy, { guildId, userId }) {
   const p = (prompt || '').trim();
   if (!policy.enabled && policy.mode !== 'allow') {
-    return { ok: false, code: 'DISABLED', message: 'Image generation is currently disabled by admins.' };
+    return { ok: false, code: 'DISABLED', message: 'Image generation is disabled because I\'m broke.' };
   }
   if (policy.mode === 'deny') {
     return { ok: false, code: 'DENY_OVERRIDE', message: 'You are not allowed to use image generation.' };

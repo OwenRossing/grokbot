@@ -84,7 +84,10 @@ Replying to another message with an image also works:
 /ask question: whats good ghost:true    (visible only to you - default)
 /poll question:"Best lunch?" options:"Pizza|Tacos|Sushi" duration:2h
 /gif query:"vibes"
-/tcg action:open_pack set_code:sv1
+/do instruction:"enable memory for #general"
+/claim-pack
+/open-pack
+/market-browse
 ```
 
 The `ghost` parameter controls message visibility:
@@ -93,28 +96,29 @@ The `ghost` parameter controls message visibility:
 
 
 ### Memory controls
-- `/memory action:user_on` — enable memory
-- `/memory action:user_off` — disable memory
-- `/memory action:user_view` — view your stored summary
-- `/memory action:user_reset` — wipe your own memory
+- `/memory user on` — enable memory
+- `/memory user off` — disable memory
+- `/memory user view` — view your stored summary
+- `/memory user reset` — wipe your own memory
 - `/lobotomize` — wipe stored history
 
 ### Channel allowlist (guild admins)
 Memory starts disabled for all **guild channels**. In allowlisted guild channels, the bot passively records all messages from users who have memory enabled, regardless of whether the bot is mentioned or responds. This provides channel and server context for the bot. Use:
-- `/memory action:channel_allow channel:<channel>`
-- `/memory action:channel_deny channel:<channel>`
-- `/memory action:channel_list`
-- `/memory action:channel_reset channel:<channel>`
-- `/memory action:guild_scope mode:<allowlist|allow_all_visible>`
-- `/memory action:guild_view`
-- `/memory action:guild_reset`
-- `/memory action:admin_reset_user user:<user>`
+- `/memory channel allow channel:<channel>`
+- `/memory channel deny channel:<channel>`
+- `/memory channel list`
+- `/memory channel reset channel:<channel>`
+- `/memory guild scope mode:<allowlist|allow_all_visible>`
+- `/memory guild view`
+- `/memory guild reset`
+- `/memory admin reset-user user:<user>`
 - `/status <on|off|view>` (admin, controls ephemeral status sidecar)
+- `/do instruction:"set memory scope to allowlist"` (natural-language command gateway)
 
 ### Search
-- `/search memory <query>` â€” search remembered chat context
-- `/search web <query>` â€” search the web (provider-based)
-- `/search all <query>` â€” search both memory and web
+- Search is automatic in normal conversation.
+- The bot already searches remembered server/channel context when needed.
+- Web search is auto-invoked for time-sensitive or factual queries (if `WEB_SEARCH_ENABLED` is not set to `0`).
 
 ### Message management (guild admins)
 - `/purge <timeframe> <channel>` â€” delete all bot messages in a channel within the specified timeframe (1h, 6h, 12h, 24h, 7d, 30d, or all time)
@@ -123,7 +127,7 @@ Memory starts disabled for all **guild channels**. In allowlisted guild channels
 The bot works fully in DMs with the same memory and conversation features as in guilds:
 - Use `/ask` to interact with the bot (the `ghost` parameter has no effect in DMs)
 - Direct messages work without needing to mention the bot
-- Memory is enabled by default (can be toggled with `/memory action:user_on` and `/memory action:user_off`)
+- Memory is enabled by default (can be toggled with `/memory user on` and `/memory user off`)
 - All conversation history and preferences are preserved
 
 DMs are allowed for memory writes when the user has memory enabled.
@@ -138,10 +142,26 @@ DMs are allowed for memory writes when the user has memory enabled.
 - Search Giphy with `/gif query:"cats"` (requires `GIPHY_API_KEY`)
 
 ### Pokemon TCG
-- Open a pack: `/tcg action:open_pack set_code:sv1`
-- View inventory: `/tcg action:inventory`
-- Offer trade: `/tcg action:trade_offer target_user:@User card_instance_ids:ci_x,ci_y`
-- View your trades: `/tcg action:trade_view`
+- Claim packs: `/claim-pack`
+- Open packs: `/open-pack`
+- View unopened queue: `/view-unopened-packs`
+- Toggle auto-claim: `/auto-claim-pack mode:on`
+- View inventory: `/inventory`
+- Offer trade: `/trade-offer target_user:@User card_instance_ids:ci_x,ci_y credits:50 request_credits:10`
+- View your trades: `/trade-view`
+- Browse singles market: `/market-browse`
+- Quote and buy singles: `/market-quote-buy`, `/market-buy`
+- Sell specific cards or duplicates: `/market-sell` (supports `card` autocomplete), `/market-sell-duplicates`
+- Natural language commands also work when the bot is addressed, for example:
+  - `open my hourly tcg pack`
+  - `show my tcg inventory`
+  - `tcg collection stats`
+- Pack reveals now use interactive embed controls (`Previous`/`Next`) with GIF animations and static-image fallback.
+
+### Local Web UI (LAN)
+- Enable with `WEB_UI_ENABLED=1`.
+- Set auth with `WEB_UI_ADMIN_USER` and either `WEB_UI_ADMIN_PASSWORD_HASH` or `WEB_UI_ADMIN_PASSWORD`.
+- Optional host/port: `WEB_UI_HOST` (default `0.0.0.0`) and `WEB_UI_PORT` (default `8787`).
 
 ### Videos
 - Reply to a video with `@BotName` or use `/ask` while replying; the bot will acknowledge video context. Advanced transcription is not enabled by default.
@@ -155,4 +175,3 @@ DMs are allowed for memory writes when the user has memory enabled.
 
 ## Data storage
 SQLite is used via `better-sqlite3` and stored in `data.db` in the project root.
-

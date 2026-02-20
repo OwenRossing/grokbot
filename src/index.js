@@ -3,6 +3,7 @@ import { Client, GatewayIntentBits, Partials } from 'discord.js';
 import { setupEvents } from './events/index.js';
 import { setupProcessGuards } from './utils/helpers.js';
 import { flushQueuedMessages } from './memory.js';
+import { startWebServer } from './web/server.js';
 
 const {
   DISCORD_TOKEN,
@@ -46,12 +47,19 @@ const config = {
 
 async function main() {
   try {
+    const webServer = startWebServer();
     // Setup event listeners
-    setupEvents({ client, config, inMemoryTurns, pollTimers });
+    const cleanupEvents = setupEvents({ client, config, inMemoryTurns, pollTimers });
 
     // Setup process guards
     setupProcessGuards(client, {
       onShutdown: () => {
+        if (typeof cleanupEvents === 'function') {
+          cleanupEvents();
+        }
+        if (webServer && typeof webServer.close === 'function') {
+          void webServer.close();
+        }
         flushQueuedMessages();
       },
     });

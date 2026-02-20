@@ -136,7 +136,7 @@ export async function handlePrompt({
     effectivePrompt = effectivePrompt ? `${effectivePrompt}\n${videoNote}` : videoNote;
   }
 
-  const webSearchEnabled = process.env.WEB_SEARCH_ENABLED === '1';
+  const webSearchEnabled = process.env.WEB_SEARCH_ENABLED !== '0';
   let webSearchResults = [];
   if (webSearchEnabled && shouldAutoWebSearch(effectivePrompt)) {
     if (onStatus) {

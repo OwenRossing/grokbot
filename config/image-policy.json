@@ -1,5 +1,5 @@
 {
-  "enabled": true,
+  "enabled": false,
   "maxPromptChars": 1200,
   "userDailyLimit": 20,
   "guildDailyLimit": 500,

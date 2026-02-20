@@ -97,6 +97,7 @@ export async function safeExecute(label, fn, context) {
 
 export function setupProcessGuards(client, options = {}) {
   const onShutdown = typeof options.onShutdown === 'function' ? options.onShutdown : null;
+  let shuttingDown = false;
 
   process.on('unhandledRejection', (reason) => {
     console.error('Unhandled rejection:', reason);
@@ -104,22 +105,38 @@ export function setupProcessGuards(client, options = {}) {
   process.on('uncaughtException', (err) => {
     console.error('Uncaught exception:', err);
   });
-  process.on('SIGTERM', () => {
-    console.log('SIGTERM received. Closing Discord client.');
+
+  const shutdown = async (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`${signal} received. Closing Discord client.`);
+
+    const forcedExitTimer = setTimeout(() => {
+      process.exit(0);
+    }, 1500);
+    forcedExitTimer.unref?.();
+
     if (onShutdown) {
       try {
-        onShutdown();
-      } catch {}
+        await onShutdown();
+      } catch (err) {
+        console.error('Shutdown hook failed:', err);
+      }
     }
-    client.destroy();
+
+    try {
+      client.destroy();
+    } catch (err) {
+      console.error('Failed to destroy Discord client:', err);
+    }
+
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', () => {
+    void shutdown('SIGTERM');
   });
   process.on('SIGINT', () => {
-    console.log('SIGINT received. Closing Discord client.');
-    if (onShutdown) {
-      try {
-        onShutdown();
-      } catch {}
-    }
-    client.destroy();
+    void shutdown('SIGINT');
   });
 }

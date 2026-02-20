@@ -1,9 +1,10 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import {
-  cancelOrRejectTrade,
+  cancelTradeByActor,
   createTradeOffer,
   expirePendingTradeIfNeeded,
   getTrade,
+  rejectTradeByActor,
   settleTrade,
 } from './tcgStore.js';
 
@@ -29,12 +30,12 @@ export function createOffer(params) {
   return createTradeOffer({ ...params, expiresAt });
 }
 
-export function rejectOffer(tradeId) {
-  return cancelOrRejectTrade(tradeId, 'pending', 'rejected');
+export function rejectOffer(tradeId, actorUserId) {
+  return rejectTradeByActor(tradeId, actorUserId);
 }
 
-export function cancelOffer(tradeId) {
-  return cancelOrRejectTrade(tradeId, 'pending', 'cancelled');
+export function cancelOffer(tradeId, actorUserId) {
+  return cancelTradeByActor(tradeId, actorUserId);
 }
 
 export function acceptOffer(tradeId, accepterUserId) {
@@ -45,4 +46,3 @@ export function getTradeWithExpiry(tradeId) {
   const trade = expirePendingTradeIfNeeded(tradeId);
   return trade || getTrade(tradeId);
 }
-
