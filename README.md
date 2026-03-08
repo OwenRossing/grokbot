@@ -55,7 +55,6 @@ Optional:
 - `MEMORY_HYDRATE_MODE` (`full`, `light`, `off`; overrides NODE_ENV behavior)
 - `MEMORY_HYDRATE_MEMBER_LIMIT` (default: `1000`)
 - `FEATURE_MARKETS_ENABLED` (`1` to enable prediction markets module)
-- `FEATURE_TCG_LEGACY_ENABLED` (`1` to expose archived TCG commands)
 - `KALSHI_API_BASE_URL` (default: `https://api.elections.kalshi.com`)
 - `KALSHI_API_KEY` (optional for read-only public market requests)
 - `MARKETS_SYNC_MS` (default: `60000`, background sync cadence)
@@ -161,10 +160,9 @@ DMs are allowed for memory writes when the user has memory enabled.
 - View achievements: `/achievements [user]`
 - Responses include a paper-trading disclaimer (no real money, no financial advice).
 
-### Archived TCG (Legacy Toggle)
-- TCG remains in code and DB, but is hidden by default.
-- Enable legacy TCG commands with `FEATURE_TCG_LEGACY_ENABLED=1`.
-- With legacy disabled, old TCG command invocations return a deprecation message pointing to `/markets`.
+### TCG Status
+- TCG commands are removed from active runtime and slash registration.
+- Prediction markets are now the primary game surface.
 
 ### Local Web UI (LAN)
 - Enable with `WEB_UI_ENABLED=1`.

@@ -18,19 +18,11 @@ import { REST, Routes } from 'discord.js';
 import { commands } from '../commands/index.js';
 import { normalizeMediaFromMessage } from '../utils/media.js';
 import { setRecentReactionTarget } from '../services/reactionContext.js';
-import {
-  activateDueLiveEvents,
-  expireEndedLiveEvents,
-  expirePendingTrades,
-  runAutoClaimSweep,
-} from '../services/tcg/tcgStore.js';
-import { cleanupExpiredRevealSessions } from '../services/tcg/revealSessionStore.js';
 import { runMarketsMaintenance } from '../services/markets/maintenance.js';
-import { isMarketsEnabled, isTcgLegacyEnabled } from '../utils/features.js';
+import { isMarketsEnabled } from '../utils/features.js';
 import { ensureActiveSeason } from '../services/markets/store.js';
 
 export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
-  let tcgCleanupInterval = null;
   let marketsMaintenanceInterval = null;
 
   const rawCommandRegistrationScope = (process.env.COMMAND_REGISTRATION_SCOPE || 'guild').toLowerCase();
@@ -341,29 +333,6 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
         console.error('Failed to resume polls', e);
       }
 
-      if (isTcgLegacyEnabled()) {
-        tcgCleanupInterval = setInterval(() => {
-          try {
-            const expiredTrades = expirePendingTrades(200);
-            const expiredReveals = cleanupExpiredRevealSessions();
-            const autoClaimed = runAutoClaimSweep({
-              maxPending: Number.parseInt(process.env.TCG_AUTO_CLAIM_MAX_PENDING || '24', 10),
-              limitUsers: Number.parseInt(process.env.TCG_AUTO_CLAIM_BATCH_LIMIT || '200', 10),
-            });
-            const activatedEvents = activateDueLiveEvents('system');
-            const expiredEvents = expireEndedLiveEvents('system');
-            if (expiredTrades > 0 || expiredReveals > 0 || autoClaimed > 0 || activatedEvents > 0 || expiredEvents > 0) {
-              console.log(
-                `TCG cleanup: expiredTrades=${expiredTrades}, expiredReveals=${expiredReveals}, autoClaimed=${autoClaimed}, activatedEvents=${activatedEvents}, expiredEvents=${expiredEvents}`
-              );
-            }
-          } catch (err) {
-            console.error('TCG cleanup job failed', err);
-          }
-        }, Number.parseInt(process.env.TCG_AUTO_CLAIM_SWEEP_MS || '60000', 10));
-        tcgCleanupInterval.unref?.();
-      }
-
       if (isMarketsEnabled()) {
         ensureActiveSeason(Date.now());
         const maintenanceMs = Number.parseInt(process.env.MARKETS_SYNC_MS || '60000', 10) || 60000;
@@ -389,11 +358,6 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
       clearTimeout(timer);
     }
     pollTimers.clear();
-
-    if (tcgCleanupInterval) {
-      clearInterval(tcgCleanupInterval);
-      tcgCleanupInterval = null;
-    }
     if (marketsMaintenanceInterval) {
       clearInterval(marketsMaintenanceInterval);
       marketsMaintenanceInterval = null;

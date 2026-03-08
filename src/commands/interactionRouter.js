@@ -19,47 +19,7 @@ import {
   executeMarketsCommand,
   executePortfolioCommand,
 } from './marketHandlers.js';
-import {
-  executeAdminAuditCommand,
-  executeAdminEventCreateCommand,
-  executeAdminEventDeleteCommand,
-  executeAdminEventDisableCommand,
-  executeAdminEventEnableCommand,
-  executeAdminEventListCommand,
-  executeAdminEventNowCommand,
-  executeAdminGrantCreditsCommand,
-  executeAdminGrantPackCommand,
-  executeAdminRollbackTradeCommand,
-  executeAdminSetMultiplierCommand,
-  executeAdminTradeLockCommand,
-  executeAutoClaimPackCommand,
-  executeCardViewCommand,
-  executeClaimPackCommand,
-  executePacksCommand,
-  executeCollectionStatsCommand,
-  executeInventoryCommand,
-  executeMarketValueCommand,
-  executeMarketBrowseCommand,
-  executeMarketQuoteBuyCommand,
-  executeMarketBuyCommand,
-  executeMarketQuoteSellCommand,
-  executeMarketSellCommand,
-  executeMarketSellDuplicatesCommand,
-  executeOpenPackCommand,
-  executeTradeAcceptCommand,
-  executeTradeCancelCommand,
-  executeTradeOfferCommand,
-  executeTradeRejectCommand,
-  executeTradeViewCommand,
-  executeViewUnopenedPacksCommand,
-  executeViewPackCompletionCommand,
-} from './tcgHandlers.js';
-import {
-  LEGACY_TCG_COMMAND_NAMES,
-  TCG_LEGACY_DEPRECATION_MESSAGE,
-  isMarketsEnabled,
-  isTcgLegacyEnabled,
-} from '../utils/features.js';
+import { isMarketsEnabled } from '../utils/features.js';
 
 export function buildInteractionCommandRouter({ inMemoryTurns, pollTimers, client, superAdminId }) {
   const router = {
@@ -117,39 +77,6 @@ export function buildInteractionCommandRouter({ inMemoryTurns, pollTimers, clien
     achievements: {
       execute: (interaction) => executeAchievementsCommand(interaction),
     },
-    'claim-pack': { execute: (interaction) => executeClaimPackCommand(interaction, { superAdminId }) },
-    packs: { execute: (interaction) => executePacksCommand(interaction, { superAdminId }) },
-    'open-pack': { execute: (interaction) => executeOpenPackCommand(interaction, { superAdminId }) },
-    'view-unopened-packs': { execute: (interaction) => executeViewUnopenedPacksCommand(interaction, { superAdminId }) },
-    'view-pack-completion': { execute: (interaction) => executeViewPackCompletionCommand(interaction, { superAdminId }) },
-    'auto-claim-pack': { execute: (interaction) => executeAutoClaimPackCommand(interaction, { superAdminId }) },
-    inventory: { execute: (interaction) => executeInventoryCommand(interaction, { superAdminId }) },
-    'card-view': { execute: (interaction) => executeCardViewCommand(interaction, { superAdminId }) },
-    'collection-stats': { execute: (interaction) => executeCollectionStatsCommand(interaction, { superAdminId }) },
-    'trade-offer': { execute: (interaction) => executeTradeOfferCommand(interaction, { superAdminId }) },
-    'trade-accept': { execute: (interaction) => executeTradeAcceptCommand(interaction, { superAdminId }) },
-    'trade-reject': { execute: (interaction) => executeTradeRejectCommand(interaction, { superAdminId }) },
-    'trade-cancel': { execute: (interaction) => executeTradeCancelCommand(interaction, { superAdminId }) },
-    'trade-view': { execute: (interaction) => executeTradeViewCommand(interaction, { superAdminId }) },
-    'market-value': { execute: (interaction) => executeMarketValueCommand(interaction, { superAdminId }) },
-    'market-browse': { execute: (interaction) => executeMarketBrowseCommand(interaction, { superAdminId }) },
-    'market-quote-buy': { execute: (interaction) => executeMarketQuoteBuyCommand(interaction, { superAdminId }) },
-    'market-buy': { execute: (interaction) => executeMarketBuyCommand(interaction, { superAdminId }) },
-    'market-quote-sell': { execute: (interaction) => executeMarketQuoteSellCommand(interaction, { superAdminId }) },
-    'market-sell': { execute: (interaction) => executeMarketSellCommand(interaction, { superAdminId }) },
-    'market-sell-duplicates': { execute: (interaction) => executeMarketSellDuplicatesCommand(interaction, { superAdminId }) },
-    'admin-grant-pack': { execute: (interaction) => executeAdminGrantPackCommand(interaction, { superAdminId }) },
-    'admin-grant-credits': { execute: (interaction) => executeAdminGrantCreditsCommand(interaction, { superAdminId }) },
-    'admin-set-multiplier': { execute: (interaction) => executeAdminSetMultiplierCommand(interaction, { superAdminId }) },
-    'admin-trade-lock': { execute: (interaction) => executeAdminTradeLockCommand(interaction, { superAdminId }) },
-    'admin-event-create': { execute: (interaction) => executeAdminEventCreateCommand(interaction, { superAdminId }) },
-    'admin-event-list': { execute: (interaction) => executeAdminEventListCommand(interaction, { superAdminId }) },
-    'admin-event-enable': { execute: (interaction) => executeAdminEventEnableCommand(interaction, { superAdminId }) },
-    'admin-event-disable': { execute: (interaction) => executeAdminEventDisableCommand(interaction, { superAdminId }) },
-    'admin-event-delete': { execute: (interaction) => executeAdminEventDeleteCommand(interaction, { superAdminId }) },
-    'admin-event-now': { execute: (interaction) => executeAdminEventNowCommand(interaction, { superAdminId }) },
-    'admin-audit': { execute: (interaction) => executeAdminAuditCommand(interaction, { superAdminId }) },
-    'admin-rollback-trade': { execute: (interaction) => executeAdminRollbackTradeCommand(interaction, { superAdminId }) },
   };
 
   if (!isMarketsEnabled()) {
@@ -158,20 +85,6 @@ export function buildInteractionCommandRouter({ inMemoryTurns, pollTimers, clien
     delete router.portfolio;
     delete router.leaderboard;
     delete router.achievements;
-  }
-
-  if (!isTcgLegacyEnabled()) {
-    for (const commandName of LEGACY_TCG_COMMAND_NAMES) {
-      router[commandName] = {
-        execute: async (interaction) => {
-          if (interaction.deferred || interaction.replied) {
-            await interaction.followUp({ content: TCG_LEGACY_DEPRECATION_MESSAGE, ephemeral: true });
-          } else {
-            await interaction.reply({ content: TCG_LEGACY_DEPRECATION_MESSAGE, ephemeral: true });
-          }
-        },
-      };
-    }
   }
 
   return router;

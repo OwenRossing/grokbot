@@ -1,5 +1,5 @@
 import { PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
-import { isMarketsEnabled, isTcgLegacyEnabled } from '../utils/features.js';
+import { isMarketsEnabled } from '../utils/features.js';
 
 export const askCommand = {
   data: new SlashCommandBuilder()
@@ -919,44 +919,7 @@ const marketsCommands = [
   achievementsCommand,
 ];
 
-const tcgLegacyCommands = [
-  claimPackCommand,
-  packsCommand,
-  openPackCommand,
-  viewUnopenedPacksCommand,
-  viewPackCompletionCommand,
-  autoClaimPackCommand,
-  inventoryCommand,
-  cardViewCommand,
-  collectionStatsCommand,
-  tradeOfferCommand,
-  tradeAcceptCommand,
-  tradeRejectCommand,
-  tradeCancelCommand,
-  tradeViewCommand,
-  marketValueCommand,
-  marketBrowseCommand,
-  marketQuoteBuyCommand,
-  marketBuyCommand,
-  marketQuoteSellCommand,
-  marketSellCommand,
-  marketSellDuplicatesCommand,
-  adminGrantPackCommand,
-  adminGrantCreditsCommand,
-  adminSetMultiplierCommand,
-  adminTradeLockCommand,
-  adminEventCreateCommand,
-  adminEventListCommand,
-  adminEventEnableCommand,
-  adminEventDisableCommand,
-  adminEventDeleteCommand,
-  adminEventNowCommand,
-  adminAuditCommand,
-  adminRollbackTradeCommand,
-];
-
 export const commands = [
   ...coreCommands,
   ...(isMarketsEnabled() ? marketsCommands : []),
-  ...(isTcgLegacyEnabled() ? tcgLegacyCommands : []),
 ];

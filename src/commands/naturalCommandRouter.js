@@ -1,27 +1,4 @@
 import { parseNaturalCommandRequest, executeCommandRequestFromMessage } from './commandRuntime.js';
-import { syncSetFromApi } from '../services/tcg/tcgApi.js';
-import { rollPackDetailed } from '../services/tcg/packEngine.js';
-import { runClaimAllAndOpenOne } from '../services/tcg/naturalMacros.js';
-import {
-  buildCompletionEmbedData,
-  buildInventorySummaryText,
-  buildPackOpenSummaryText,
-} from '../services/tcg/tcgUx.js';
-import {
-  claimCooldownPack,
-  claimPack,
-  executeMarketSellDuplicates,
-  getUserRarestCard,
-  getFreePackAvailability,
-  getCardsBySet,
-  getSetCompletionForUser,
-  getInventoryPage,
-  listClaimablePacks,
-  listUnopenedPacks,
-  openUnopenedPackWithMint,
-  getTcgOverview,
-} from '../services/tcg/tcgStore.js';
-import { isTcgLegacyEnabled } from '../utils/features.js';
 
 function normalizeSetCode(value) {
   return String(value || '').trim().toLowerCase();
@@ -692,6 +669,5 @@ async function tryHandleNaturalTcg({ message, content }) {
 export async function tryHandleNaturalCommand({ message, content }) {
   const handledMemory = await tryHandleNaturalMemoryStatus({ message, content });
   if (handledMemory) return true;
-  if (!isTcgLegacyEnabled()) return false;
-  return tryHandleNaturalTcg({ message, content });
+  return false;
 }
