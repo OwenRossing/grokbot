@@ -10,15 +10,28 @@ import { buildInteractionCommandRouter } from '../commands/interactionRouter.js'
 import { executeCommandConfirmationButton } from '../commands/commandRuntime.js';
 import { hasInteractionAdminAccess, isSuperAdminUser } from '../utils/auth.js';
 import { wrapInteractionForEmbedReplies } from '../utils/embedReply.js';
+import { TCG_LEGACY_DEPRECATION_MESSAGE, isTcgLegacyEnabled } from '../utils/features.js';
 
 export async function handleInteraction(interaction, { inMemoryTurns, pollTimers, client, superAdminId }) {
   const wrappedInteraction = wrapInteractionForEmbedReplies(interaction, { defaultTitle: 'Command Result' });
   if (interaction.isAutocomplete()) {
+    if (!isTcgLegacyEnabled()) {
+      try {
+        await interaction.respond([]);
+      } catch {
+        // Ignore autocomplete response races.
+      }
+      return;
+    }
     const handled = await executeTcgAutocomplete(interaction);
     if (handled) return;
     return;
   }
   if (interaction.isButton()) {
+    if (!isTcgLegacyEnabled() && String(interaction.customId || '').startsWith('tcg_')) {
+      await wrappedInteraction.reply({ content: TCG_LEGACY_DEPRECATION_MESSAGE, ephemeral: true });
+      return;
+    }
     const commandConfirmHandled = await executeCommandConfirmationButton(wrappedInteraction, { superAdminId });
     if (commandConfirmHandled) return;
     const handled = await executeTcgTradeButton(wrappedInteraction);

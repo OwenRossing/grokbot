@@ -13,6 +13,7 @@ A production-ready Discord bot built with **discord.js v14** and Grok (OpenAI-co
 - Image support (attachments, embeds, and image URLs) with vision model routing.
 - Polls via reactions with auto-close and results.
 - Giphy GIF search with `/gif`.
+- Prediction markets (paper trading): browse, buy, portfolio, leaderboard, achievements.
 - Admin command to purge bot messages from channels with flexible timeframes.
 
 ## Setup
@@ -53,6 +54,12 @@ Optional:
 - `MEMORY_MAX_DAYS` (default: `45`)
 - `MEMORY_HYDRATE_MODE` (`full`, `light`, `off`; overrides NODE_ENV behavior)
 - `MEMORY_HYDRATE_MEMBER_LIMIT` (default: `1000`)
+- `FEATURE_MARKETS_ENABLED` (`1` to enable prediction markets module)
+- `FEATURE_TCG_LEGACY_ENABLED` (`1` to expose archived TCG commands)
+- `KALSHI_API_BASE_URL` (default: `https://api.elections.kalshi.com`)
+- `KALSHI_API_KEY` (optional for read-only public market requests)
+- `MARKETS_SYNC_MS` (default: `60000`, background sync cadence)
+- `PAPER_STARTING_BALANCE` (default: `10000`)
 
 **AI Intelligence Enhancement Parameters:**
 - `LLM_TEMPERATURE` (default: `0.3`) - Controls randomness (0.0-2.0). Lower = more focused, Higher = more creative
@@ -90,9 +97,8 @@ Replying to another message with an image also works:
 /poll question:"Best lunch?" options:"Pizza|Tacos|Sushi" duration:2h
 /gif query:"vibes"
 /do instruction:"enable memory for #general"
-/claim-pack
-/open-pack
-/market-browse
+/markets list
+/bet buy ticker:... side:yes qty:5
 ```
 
 The `ghost` parameter controls message visibility:
@@ -146,22 +152,19 @@ DMs are allowed for memory writes when the user has memory enabled.
 ### GIFs
 - Search Giphy with `/gif query:"cats"` (requires `GIPHY_API_KEY`)
 
-### Pokemon TCG
-- Claim packs: `/claim-pack`
-- Open packs: `/open-pack`
-- View unopened queue: `/view-unopened-packs`
-- Toggle auto-claim: `/auto-claim-pack mode:on`
-- View inventory: `/inventory`
-- Offer trade: `/trade-offer target_user:@User card_instance_ids:ci_x,ci_y credits:50 request_credits:10`
-- View your trades: `/trade-view`
-- Browse singles market: `/market-browse`
-- Quote and buy singles: `/market-quote-buy`, `/market-buy`
-- Sell specific cards or duplicates: `/market-sell` (supports `card` autocomplete), `/market-sell-duplicates`
-- Natural language commands also work when the bot is addressed, for example:
-  - `open my hourly tcg pack`
-  - `show my tcg inventory`
-  - `tcg collection stats`
-- Pack reveals now use interactive embed controls (`Previous`/`Next`) with GIF animations and static-image fallback.
+### Prediction Markets (Primary)
+- Browse markets: `/markets list`
+- View market detail: `/markets view ticker:<ticker>`
+- Place paper trade: `/bet buy ticker:<ticker> side:<yes|no> qty:<contracts>`
+- View portfolio: `/portfolio [user]`
+- View leaderboard: `/leaderboard type:net_worth`
+- View achievements: `/achievements [user]`
+- Responses include a paper-trading disclaimer (no real money, no financial advice).
+
+### Archived TCG (Legacy Toggle)
+- TCG remains in code and DB, but is hidden by default.
+- Enable legacy TCG commands with `FEATURE_TCG_LEGACY_ENABLED=1`.
+- With legacy disabled, old TCG command invocations return a deprecation message pointing to `/markets`.
 
 ### Local Web UI (LAN)
 - Enable with `WEB_UI_ENABLED=1`.

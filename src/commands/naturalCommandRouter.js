@@ -21,6 +21,7 @@ import {
   openUnopenedPackWithMint,
   getTcgOverview,
 } from '../services/tcg/tcgStore.js';
+import { isTcgLegacyEnabled } from '../utils/features.js';
 
 function normalizeSetCode(value) {
   return String(value || '').trim().toLowerCase();
@@ -691,5 +692,6 @@ async function tryHandleNaturalTcg({ message, content }) {
 export async function tryHandleNaturalCommand({ message, content }) {
   const handledMemory = await tryHandleNaturalMemoryStatus({ message, content });
   if (handledMemory) return true;
+  if (!isTcgLegacyEnabled()) return false;
   return tryHandleNaturalTcg({ message, content });
 }

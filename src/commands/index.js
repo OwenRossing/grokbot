@@ -1,4 +1,5 @@
 import { PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
+import { isMarketsEnabled, isTcgLegacyEnabled } from '../utils/features.js';
 
 export const askCommand = {
   data: new SlashCommandBuilder()
@@ -285,6 +286,105 @@ export const searchCommand = {
         .addStringOption((option) =>
           option.setName('query').setDescription('What to search for').setRequired(true)
         )
+    ),
+};
+
+export const marketsCommand = {
+  data: new SlashCommandBuilder()
+    .setName('markets')
+    .setDescription('Browse prediction markets')
+    .setDMPermission(true)
+    .addSubcommand((sub) =>
+      sub
+        .setName('list')
+        .setDescription('List markets')
+        .addStringOption((option) =>
+          option.setName('category').setDescription('Optional category filter').setRequired(false)
+        )
+        .addStringOption((option) =>
+          option
+            .setName('status')
+            .setDescription('Market status filter')
+            .setRequired(false)
+            .addChoices(
+              { name: 'Open', value: 'open' },
+              { name: 'Closing (<24h)', value: 'closing' },
+              { name: 'All', value: 'all' }
+            )
+        )
+        .addIntegerOption((option) =>
+          option.setName('limit').setDescription('Rows to show (max 25)').setRequired(false)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('view')
+        .setDescription('View one market')
+        .addStringOption((option) =>
+          option.setName('ticker').setDescription('Market ticker').setRequired(true)
+        )
+    ),
+};
+
+export const betCommand = {
+  data: new SlashCommandBuilder()
+    .setName('bet')
+    .setDescription('Place paper trades')
+    .setDMPermission(true)
+    .addSubcommand((sub) =>
+      sub
+        .setName('buy')
+        .setDescription('Buy YES or NO contracts')
+        .addStringOption((option) =>
+          option.setName('ticker').setDescription('Market ticker').setRequired(true)
+        )
+        .addStringOption((option) =>
+          option
+            .setName('side')
+            .setDescription('Contract side')
+            .setRequired(true)
+            .addChoices(
+              { name: 'Yes', value: 'yes' },
+              { name: 'No', value: 'no' }
+            )
+        )
+        .addIntegerOption((option) =>
+          option.setName('qty').setDescription('Contracts to buy').setRequired(true)
+        )
+    ),
+};
+
+export const portfolioCommand = {
+  data: new SlashCommandBuilder()
+    .setName('portfolio')
+    .setDescription('View paper trading portfolio')
+    .setDMPermission(true)
+    .addUserOption((option) =>
+      option.setName('user').setDescription('View another user').setRequired(false)
+    ),
+};
+
+export const leaderboardCommand = {
+  data: new SlashCommandBuilder()
+    .setName('leaderboard')
+    .setDescription('View prediction leaderboard')
+    .setDMPermission(true)
+    .addStringOption((option) =>
+      option
+        .setName('type')
+        .setDescription('Leaderboard type')
+        .setRequired(true)
+        .addChoices({ name: 'Net Worth', value: 'net_worth' })
+    ),
+};
+
+export const achievementsCommand = {
+  data: new SlashCommandBuilder()
+    .setName('achievements')
+    .setDescription('View unlocked achievements')
+    .setDMPermission(true)
+    .addUserOption((option) =>
+      option.setName('user').setDescription('View another user').setRequired(false)
     ),
 };
 
@@ -796,7 +896,7 @@ export const adminRollbackTradeCommand = {
     ),
 };
 
-export const commands = [
+const coreCommands = [
   askCommand,
   pollCommand,
   gifCommand,
@@ -809,6 +909,17 @@ export const commands = [
   statusCommand,
   doCommand,
   searchCommand,
+];
+
+const marketsCommands = [
+  marketsCommand,
+  betCommand,
+  portfolioCommand,
+  leaderboardCommand,
+  achievementsCommand,
+];
+
+const tcgLegacyCommands = [
   claimPackCommand,
   packsCommand,
   openPackCommand,
@@ -842,4 +953,10 @@ export const commands = [
   adminEventNowCommand,
   adminAuditCommand,
   adminRollbackTradeCommand,
+];
+
+export const commands = [
+  ...coreCommands,
+  ...(isMarketsEnabled() ? marketsCommands : []),
+  ...(isTcgLegacyEnabled() ? tcgLegacyCommands : []),
 ];

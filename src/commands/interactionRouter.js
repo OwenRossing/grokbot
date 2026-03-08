@@ -13,6 +13,13 @@ import {
   executeSearchCommand,
 } from './handlers.js';
 import {
+  executeAchievementsCommand,
+  executeBetCommand,
+  executeLeaderboardCommand,
+  executeMarketsCommand,
+  executePortfolioCommand,
+} from './marketHandlers.js';
+import {
   executeAdminAuditCommand,
   executeAdminEventCreateCommand,
   executeAdminEventDeleteCommand,
@@ -47,9 +54,15 @@ import {
   executeViewUnopenedPacksCommand,
   executeViewPackCompletionCommand,
 } from './tcgHandlers.js';
+import {
+  LEGACY_TCG_COMMAND_NAMES,
+  TCG_LEGACY_DEPRECATION_MESSAGE,
+  isMarketsEnabled,
+  isTcgLegacyEnabled,
+} from '../utils/features.js';
 
 export function buildInteractionCommandRouter({ inMemoryTurns, pollTimers, client, superAdminId }) {
-  return {
+  const router = {
     ask: {
       execute: (interaction) => executeAskCommand(interaction, inMemoryTurns, client),
     },
@@ -89,6 +102,21 @@ export function buildInteractionCommandRouter({ inMemoryTurns, pollTimers, clien
     search: {
       execute: (interaction) => executeSearchCommand(interaction),
     },
+    markets: {
+      execute: (interaction) => executeMarketsCommand(interaction),
+    },
+    bet: {
+      execute: (interaction) => executeBetCommand(interaction),
+    },
+    portfolio: {
+      execute: (interaction) => executePortfolioCommand(interaction),
+    },
+    leaderboard: {
+      execute: (interaction) => executeLeaderboardCommand(interaction),
+    },
+    achievements: {
+      execute: (interaction) => executeAchievementsCommand(interaction),
+    },
     'claim-pack': { execute: (interaction) => executeClaimPackCommand(interaction, { superAdminId }) },
     packs: { execute: (interaction) => executePacksCommand(interaction, { superAdminId }) },
     'open-pack': { execute: (interaction) => executeOpenPackCommand(interaction, { superAdminId }) },
@@ -123,4 +151,28 @@ export function buildInteractionCommandRouter({ inMemoryTurns, pollTimers, clien
     'admin-audit': { execute: (interaction) => executeAdminAuditCommand(interaction, { superAdminId }) },
     'admin-rollback-trade': { execute: (interaction) => executeAdminRollbackTradeCommand(interaction, { superAdminId }) },
   };
+
+  if (!isMarketsEnabled()) {
+    delete router.markets;
+    delete router.bet;
+    delete router.portfolio;
+    delete router.leaderboard;
+    delete router.achievements;
+  }
+
+  if (!isTcgLegacyEnabled()) {
+    for (const commandName of LEGACY_TCG_COMMAND_NAMES) {
+      router[commandName] = {
+        execute: async (interaction) => {
+          if (interaction.deferred || interaction.replied) {
+            await interaction.followUp({ content: TCG_LEGACY_DEPRECATION_MESSAGE, ephemeral: true });
+          } else {
+            await interaction.reply({ content: TCG_LEGACY_DEPRECATION_MESSAGE, ephemeral: true });
+          }
+        },
+      };
+    }
+  }
+
+  return router;
 }
