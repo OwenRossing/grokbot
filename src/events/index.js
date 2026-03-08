@@ -20,6 +20,7 @@ import { commands } from '../commands/index.js';
 import { normalizeMediaFromMessage } from '../utils/media.js';
 import { setRecentReactionTarget } from '../services/reactionContext.js';
 import { runMarketsMaintenance } from '../services/markets/maintenance.js';
+import { getTitleEngineStatus } from '../services/markets/marketTitleService.js';
 import { isMarketsEnabled } from '../utils/features.js';
 import { ensureActiveSeason } from '../services/markets/store.js';
 
@@ -356,6 +357,10 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
 
       if (isMarketsEnabled()) {
         ensureActiveSeason(Date.now());
+        const titleEngine = getTitleEngineStatus();
+        console.log(
+          `Markets title engine: mode=${titleEngine.mode}; ai=${titleEngine.aiEnabled ? 'on' : 'off'}; model=${titleEngine.model}; healthy=${titleEngine.healthy ? 'yes' : 'no'}`
+        );
         const maintenanceMs = Number.parseInt(process.env.MARKETS_SYNC_MS || '60000', 10) || 60000;
         marketsMaintenanceInterval = setInterval(async () => {
           try {

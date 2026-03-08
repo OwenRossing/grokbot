@@ -2,6 +2,7 @@ import { EmbedBuilder } from 'discord.js';
 import { evaluateAchievementUnlocks, listUserAchievements } from '../services/markets/achievementService.js';
 import { getMarketByTicker, listMarkets } from '../services/markets/kalshiClient.js';
 import { getNetWorthLeaderboard } from '../services/markets/leaderboardService.js';
+import { attachDisplayTitle, getDisplayTitle } from '../services/markets/marketTitleService.js';
 import { placeBuyOrder } from '../services/markets/paperEngine.js';
 import {
   ensureActiveSeason,
@@ -16,19 +17,32 @@ import {
 import { computeNetWorth, refreshUserNetWorth } from '../services/markets/statsService.js';
 
 const DISCLAIMER = 'Paper trading only. No real money. Not financial advice.';
+const MARKET_COLOR = 0x1f6feb;
+
+function badgeForStatus(status = '') {
+  const value = String(status || '').toLowerCase();
+  if (value.includes('open') || value.includes('active')) return '🟢 Open';
+  if (value.includes('settled') || value.includes('final')) return '⚪ Settled';
+  if (value.includes('closed')) return '🔴 Closed';
+  return '🟡 Unknown';
+}
 
 function dollars(value) {
   return `$${Number(value || 0).toFixed(2)}`;
 }
 
-function formatMarketLine(market) {
+export function formatMarketLine(market) {
   const closeTs = Number(market.closeTime || market.close_time) || 0;
   const status = String(market.status || 'open');
   const yes = Number(market.yesPrice ?? market.yes_price);
   const no = Number(market.noPrice ?? market.no_price);
+  const display = attachDisplayTitle(market);
+  const lineTitle = display.displayTitle || market.title || '(untitled market)';
+  const subtitle = display.displaySubtitle ? `\n_${display.displaySubtitle}_` : '';
   return [
-    `\`${market.ticker}\` ${market.title || '(untitled market)'}`,
-    `YES ${Number.isFinite(yes) ? `${yes}¢` : '—'} • NO ${Number.isFinite(no) ? `${no}¢` : '—'} • ${status}${closeTs > 0 ? ` • closes <t:${Math.floor(closeTs / 1000)}:R>` : ''}`,
+    `**${lineTitle}**`,
+    `\`${market.ticker}\` • ${badgeForStatus(status)}${closeTs > 0 ? ` • closes <t:${Math.floor(closeTs / 1000)}:R>` : ''}`,
+    `YES ${Number.isFinite(yes) ? `${yes}¢` : '—'}  |  NO ${Number.isFinite(no) ? `${no}¢` : '—'}${subtitle}`,
   ].join('\n');
 }
 
@@ -44,12 +58,24 @@ export async function executeMarketsCommand(interaction) {
     let stale = false;
     try {
       markets = await listMarkets({ category, status, limit });
-      for (const market of markets) upsertMarketCache(market);
+      for (const market of markets) {
+        const display = await getDisplayTitle(market, { allowAi: false });
+        upsertMarketCache({
+          ...market,
+          displayTitle: display.displayTitle,
+          displaySubtitle: display.displaySubtitle,
+          titleSource: display.titleSource,
+          titleUpdatedAt: Date.now(),
+        });
+      }
     } catch (err) {
       stale = true;
       markets = listCachedMarkets({ category, status, limit }).map((row) => ({
         ticker: row.ticker,
         title: row.title,
+        displayTitle: row.display_title,
+        displaySubtitle: row.display_subtitle,
+        titleSource: row.title_source,
         category: row.category,
         closeTime: row.close_time,
         yesPrice: row.yes_price,
@@ -59,10 +85,15 @@ export async function executeMarketsCommand(interaction) {
     }
 
     const embed = new EmbedBuilder()
-      .setTitle('Prediction Markets')
+      .setColor(MARKET_COLOR)
+      .setTitle('Kalshi Paper Markets')
       .setDescription(markets.length
         ? markets.map(formatMarketLine).join('\n\n')
         : 'No markets available for that filter.')
+      .addFields({
+        name: 'Filters',
+        value: `Category: ${category || 'all'} • Status: ${status} • Limit: ${limit}`,
+      })
       .setFooter({ text: `${DISCLAIMER}${stale ? ' • Showing cached data.' : ''}` })
       .setTimestamp(new Date());
 
@@ -76,7 +107,14 @@ export async function executeMarketsCommand(interaction) {
     let stale = false;
     try {
       market = await getMarketByTicker(ticker);
-      upsertMarketCache(market);
+      const display = await getDisplayTitle(market, { allowAi: false });
+      market = {
+        ...market,
+        displayTitle: display.displayTitle,
+        displaySubtitle: display.displaySubtitle,
+        titleSource: display.titleSource,
+      };
+      upsertMarketCache({ ...market, titleUpdatedAt: Date.now() });
     } catch (err) {
       stale = true;
       const cached = getCachedMarket(ticker);
@@ -87,6 +125,9 @@ export async function executeMarketsCommand(interaction) {
       market = {
         ticker: cached.ticker,
         title: cached.title,
+        displayTitle: cached.display_title,
+        displaySubtitle: cached.display_subtitle,
+        titleSource: cached.title_source,
         category: cached.category,
         closeTime: cached.close_time,
         yesPrice: cached.yes_price,
@@ -95,14 +136,33 @@ export async function executeMarketsCommand(interaction) {
       };
     }
 
+    const display = attachDisplayTitle(market);
     const embed = new EmbedBuilder()
-      .setTitle(`${market.ticker} • ${market.title || 'Market'}`)
+      .setColor(MARKET_COLOR)
+      .setTitle(display.displayTitle || market.title || market.ticker || 'Market')
+      .setDescription([
+        `\`${market.ticker}\` • ${market.category || 'general'}`,
+        display.displaySubtitle ? `_${display.displaySubtitle}_` : '',
+      ].filter(Boolean).join('\n'))
       .addFields(
-        { name: 'Category', value: market.category || 'general', inline: true },
-        { name: 'Status', value: market.status || 'open', inline: true },
-        { name: 'Close', value: market.closeTime ? `<t:${Math.floor(Number(market.closeTime) / 1000)}:f>` : 'Unknown', inline: true },
-        { name: 'YES', value: Number.isFinite(Number(market.yesPrice)) ? `${Math.round(Number(market.yesPrice))}¢` : '—', inline: true },
-        { name: 'NO', value: Number.isFinite(Number(market.noPrice)) ? `${Math.round(Number(market.noPrice))}¢` : '—', inline: true }
+        {
+          name: 'Pricing',
+          value: [
+            `YES: ${Number.isFinite(Number(market.yesPrice)) ? `${Math.round(Number(market.yesPrice))}¢` : '—'}`,
+            `NO: ${Number.isFinite(Number(market.noPrice)) ? `${Math.round(Number(market.noPrice))}¢` : '—'}`,
+          ].join('\n'),
+          inline: true,
+        },
+        {
+          name: 'Timing',
+          value: market.closeTime ? `Closes <t:${Math.floor(Number(market.closeTime) / 1000)}:R>` : 'Close time unknown',
+          inline: true,
+        },
+        {
+          name: 'Status',
+          value: `${badgeForStatus(market.status)}${stale ? '\nCached snapshot' : ''}`,
+          inline: true,
+        }
       )
       .setFooter({ text: `${DISCLAIMER}${stale ? ' • Showing cached data.' : ''}` })
       .setTimestamp(new Date());
@@ -143,6 +203,7 @@ export async function executeBetCommand(interaction) {
 
     const unlockNames = result.achievements.map((a) => `\`${a.achievementId}\``).join(', ');
     const embed = new EmbedBuilder()
+      .setColor(MARKET_COLOR)
       .setTitle('Paper Trade Filled')
       .setDescription([
         `Order: \`${result.orderId}\``,
@@ -191,6 +252,7 @@ export async function executePortfolioCommand(interaction) {
   });
 
   const embed = new EmbedBuilder()
+    .setColor(MARKET_COLOR)
     .setTitle(`${targetUser.username}'s Portfolio`)
     .setDescription(lines.length ? lines.join('\n') : 'No open positions yet.')
     .addFields(
@@ -222,6 +284,7 @@ export async function executeLeaderboardCommand(interaction) {
   ));
 
   const embed = new EmbedBuilder()
+    .setColor(MARKET_COLOR)
     .setTitle(`Leaderboard • ${season.season_id}`)
     .setDescription(lines.join('\n') || 'No entries yet. Place a trade with `/bet buy`.')
     .setFooter({ text: DISCLAIMER })
@@ -237,6 +300,7 @@ export async function executeAchievementsCommand(interaction) {
   const rows = listUserAchievements(targetUser.id);
 
   const embed = new EmbedBuilder()
+    .setColor(MARKET_COLOR)
     .setTitle(`${targetUser.username}'s Achievements`)
     .setDescription(rows.length
       ? rows.map((row) => `• **${row.name || row.achievement_id}** - ${row.description || ''}`).join('\n')

@@ -59,6 +59,11 @@ Optional:
 - `KALSHI_API_KEY` (optional for read-only public market requests)
 - `MARKETS_SYNC_MS` (default: `60000`, background sync cadence)
 - `PAPER_STARTING_BALANCE` (default: `10000`)
+- `MARKETS_TITLE_AI_ENABLED` (`1` enables optional Ollama title polishing; default `0`)
+- `MARKETS_TITLE_REFRESH_MS` (default: `21600000`, display-title refresh cadence)
+- `OLLAMA_BASE_URL` (default: `http://127.0.0.1:11434`)
+- `OLLAMA_MODEL` (default: `qwen2.5:0.5b-instruct`)
+- `OLLAMA_TIMEOUT_MS` (default: `1500`)
 
 **AI Intelligence Enhancement Parameters:**
 - `LLM_TEMPERATURE` (default: `0.3`) - Controls randomness (0.0-2.0). Lower = more focused, Higher = more creative
@@ -159,6 +164,7 @@ DMs are allowed for memory writes when the user has memory enabled.
 - View leaderboard: `/leaderboard type:net_worth`
 - View achievements: `/achievements [user]`
 - Responses include a paper-trading disclaimer (no real money, no financial advice).
+- Market titles are cleaned for readability with deterministic rules; optional local Ollama rewrite is best-effort and never required.
 
 ### TCG Status
 - TCG commands are removed from active runtime and slash registration.

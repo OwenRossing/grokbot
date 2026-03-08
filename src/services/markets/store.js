@@ -68,6 +68,10 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS pm_markets_cache (
     ticker TEXT PRIMARY KEY,
     title TEXT NOT NULL,
+    display_title TEXT DEFAULT '',
+    display_subtitle TEXT DEFAULT '',
+    title_source TEXT DEFAULT 'rules',
+    title_updated_at INTEGER DEFAULT 0,
     category TEXT NOT NULL,
     close_time INTEGER NOT NULL,
     yes_price REAL,
@@ -134,6 +138,29 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_pm_stats_season_networth ON pm_user_stats(season_id, net_worth DESC);
   CREATE INDEX IF NOT EXISTS idx_pm_positions_ticker ON pm_positions(ticker, season_id);
 `);
+
+function isDuplicateColumnError(error) {
+  return (
+    error &&
+    typeof error.message === 'string' &&
+    error.message.includes('duplicate column name')
+  );
+}
+
+for (const migrationSql of [
+  "ALTER TABLE pm_markets_cache ADD COLUMN display_title TEXT DEFAULT ''",
+  "ALTER TABLE pm_markets_cache ADD COLUMN display_subtitle TEXT DEFAULT ''",
+  "ALTER TABLE pm_markets_cache ADD COLUMN title_source TEXT DEFAULT 'rules'",
+  "ALTER TABLE pm_markets_cache ADD COLUMN title_updated_at INTEGER DEFAULT 0",
+]) {
+  try {
+    db.exec(migrationSql);
+  } catch (err) {
+    if (!isDuplicateColumnError(err)) {
+      throw err;
+    }
+  }
+}
 
 const upsertSeasonStmt = db.prepare(`
   INSERT INTO pm_seasons (season_id, starts_at, ends_at, status, created_at, updated_at)
@@ -213,10 +240,17 @@ const insertOrderStmt = db.prepare(`
 `);
 
 const upsertMarketCacheStmt = db.prepare(`
-  INSERT INTO pm_markets_cache (ticker, title, category, close_time, yes_price, no_price, status, source_updated_at, cached_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO pm_markets_cache (
+    ticker, title, display_title, display_subtitle, title_source, title_updated_at,
+    category, close_time, yes_price, no_price, status, source_updated_at, cached_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(ticker) DO UPDATE SET
     title = excluded.title,
+    display_title = excluded.display_title,
+    display_subtitle = excluded.display_subtitle,
+    title_source = excluded.title_source,
+    title_updated_at = excluded.title_updated_at,
     category = excluded.category,
     close_time = excluded.close_time,
     yes_price = excluded.yes_price,
@@ -227,13 +261,13 @@ const upsertMarketCacheStmt = db.prepare(`
 `);
 
 const getCachedMarketStmt = db.prepare(`
-  SELECT ticker, title, category, close_time, yes_price, no_price, status, source_updated_at, cached_at
+  SELECT ticker, title, display_title, display_subtitle, title_source, title_updated_at, category, close_time, yes_price, no_price, status, source_updated_at, cached_at
   FROM pm_markets_cache
   WHERE ticker = ?
 `);
 
 const listCachedMarketsStmt = db.prepare(`
-  SELECT ticker, title, category, close_time, yes_price, no_price, status, source_updated_at, cached_at
+  SELECT ticker, title, display_title, display_subtitle, title_source, title_updated_at, category, close_time, yes_price, no_price, status, source_updated_at, cached_at
   FROM pm_markets_cache
   WHERE (? = '' OR category LIKE ?)
     AND (
@@ -421,16 +455,21 @@ export function createOrder({ userId, seasonId, ticker, side, qty, fillPrice, no
 }
 
 export function upsertMarketCache(market) {
+  const timestamp = now();
   upsertMarketCacheStmt.run(
     market.ticker,
     market.title || market.ticker,
+    market.displayTitle || market.display_title || market.title || market.ticker,
+    market.displaySubtitle || market.display_subtitle || '',
+    market.titleSource || market.title_source || 'rules',
+    Number(market.titleUpdatedAt || market.title_updated_at) || timestamp,
     market.category || 'general',
     Number(market.closeTime) || 0,
     Number.isFinite(Number(market.yesPrice)) ? Number(market.yesPrice) : null,
     Number.isFinite(Number(market.noPrice)) ? Number(market.noPrice) : null,
     market.status || 'open',
     Number(market.sourceUpdatedAt) || now(),
-    now()
+    timestamp
   );
 }
 

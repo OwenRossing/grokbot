@@ -1,4 +1,5 @@
 import { getMarketByTicker, listMarkets } from './kalshiClient.js';
+import { getDisplayTitle, shouldRefreshDisplayTitle } from './marketTitleService.js';
 import { settleMarketIfResolved } from './paperEngine.js';
 import {
   ensureActiveSeason,
@@ -32,7 +33,23 @@ function coerceOutcome(rawMarket = {}) {
 
 export async function syncMarketCache({ limit = 25 } = {}) {
   const markets = await listMarkets({ status: 'all', limit });
+  const existingRows = listCachedMarkets({ status: 'all', limit: 500 });
+  const existingByTicker = new Map(existingRows.map((row) => [row.ticker, row]));
   for (const market of markets) {
+    const existing = existingByTicker.get(market.ticker);
+    const shouldRefresh = shouldRefreshDisplayTitle(existing || {});
+    if (shouldRefresh) {
+      const display = await getDisplayTitle(market, { allowAi: true });
+      market.displayTitle = display.displayTitle;
+      market.displaySubtitle = display.displaySubtitle;
+      market.titleSource = display.titleSource;
+      market.titleUpdatedAt = Date.now();
+    } else if (existing) {
+      market.displayTitle = existing.display_title || existing.title;
+      market.displaySubtitle = existing.display_subtitle || '';
+      market.titleSource = existing.title_source || 'rules';
+      market.titleUpdatedAt = existing.title_updated_at || Date.now();
+    }
     upsertMarketCache(market);
   }
   return markets.length;
@@ -49,6 +66,11 @@ export async function settleResolvedMarkets() {
     if (!ticker) continue;
     try {
       const market = await getMarketByTicker(ticker);
+      const display = await getDisplayTitle(market, { allowAi: true });
+      market.displayTitle = display.displayTitle;
+      market.displaySubtitle = display.displaySubtitle;
+      market.titleSource = display.titleSource;
+      market.titleUpdatedAt = Date.now();
       upsertMarketCache(market);
       const explicitOutcome = coerceOutcome(market.raw || market);
       if (!explicitOutcome) continue;
