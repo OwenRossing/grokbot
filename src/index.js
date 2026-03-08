@@ -57,9 +57,9 @@ const config = {
 
 async function main() {
   try {
-    const webServer = startWebServer();
     // Setup event listeners
-    const cleanupEvents = setupEvents({ client, config, inMemoryTurns, pollTimers });
+    const { cleanup: cleanupEvents, adminOps } = setupEvents({ client, config, inMemoryTurns, pollTimers });
+    const webServer = startWebServer({ adminOps });
 
     // Setup process guards
     setupProcessGuards(client, {

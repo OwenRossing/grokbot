@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+import { REST, Routes } from 'discord.js';
 import { safeExecute } from '../utils/helpers.js';
 import { handleMessage, handleMessageUpdate } from '../handlers/handleMessage.js';
 import { handleInteraction } from '../handlers/handleInteraction.js';
@@ -14,7 +16,6 @@ import {
 } from '../services/guildCache.js';
 import { listOpenPolls, closePoll, getPollByMessageId, tallyVotes } from '../polls.js';
 import { NUMBER_EMOJIS } from '../utils/constants.js';
-import { REST, Routes } from 'discord.js';
 import { commands } from '../commands/index.js';
 import { normalizeMediaFromMessage } from '../utils/media.js';
 import { setRecentReactionTarget } from '../services/reactionContext.js';
@@ -22,13 +23,25 @@ import { runMarketsMaintenance } from '../services/markets/maintenance.js';
 import { isMarketsEnabled } from '../utils/features.js';
 import { ensureActiveSeason } from '../services/markets/store.js';
 
+function buildCommandFingerprint(commandPayload) {
+  const json = JSON.stringify(commandPayload || []);
+  return crypto.createHash('sha256').update(json).digest('hex').slice(0, 12);
+}
+
 export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
   let marketsMaintenanceInterval = null;
 
-  const rawCommandRegistrationScope = (process.env.COMMAND_REGISTRATION_SCOPE || 'guild').toLowerCase();
-  const commandRegistrationScope = ['global', 'guild', 'guilds', 'hybrid'].includes(rawCommandRegistrationScope)
-    ? rawCommandRegistrationScope
+  const rawScope = (process.env.COMMAND_REGISTRATION_SCOPE || 'guild').toLowerCase();
+  const commandRegistrationScope = ['global', 'guild', 'guilds', 'hybrid'].includes(rawScope)
+    ? rawScope
     : 'guild';
+
+  const shouldRegisterGuildCommands =
+    commandRegistrationScope === 'guild' ||
+    commandRegistrationScope === 'guilds' ||
+    commandRegistrationScope === 'hybrid';
+  const shouldRegisterGlobalCommands =
+    commandRegistrationScope === 'global' || commandRegistrationScope === 'hybrid';
 
   const assertUniqueCommandNames = (cmds) => {
     const names = cmds.map((cmd) => cmd.data?.name).filter(Boolean);
@@ -37,13 +50,6 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
       throw new Error(`Duplicate slash command names detected: ${dupes.join(', ')}`);
     }
   };
-
-  const shouldRegisterGuildCommands =
-    commandRegistrationScope === 'guild' ||
-    commandRegistrationScope === 'guilds' ||
-    commandRegistrationScope === 'hybrid';
-  const shouldRegisterGlobalCommands =
-    commandRegistrationScope === 'global' || commandRegistrationScope === 'hybrid';
 
   const runWithConcurrency = async (items, limit, task) => {
     if (!Array.isArray(items) || items.length === 0) return;
@@ -63,7 +69,6 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
     if (shouldRegisterGlobalCommands) {
       await rest.put(Routes.applicationCommands(appId), { body: commandPayload });
     } else {
-      // Clear global commands so users do not see duplicate entries from mixed scopes.
       await rest.put(Routes.applicationCommands(appId), { body: [] });
     }
 
@@ -73,10 +78,7 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
     if (shouldRegisterGuildCommands) {
       await runWithConcurrency(guilds, guildRegistrationConcurrency, async (guild) => {
         try {
-          await rest.put(
-            Routes.applicationGuildCommands(appId, guild.id),
-            { body: commandPayload }
-          );
+          await rest.put(Routes.applicationGuildCommands(appId, guild.id), { body: commandPayload });
         } catch (err) {
           console.error(`Failed to register guild commands for ${guild.id}:`, err);
         }
@@ -84,22 +86,54 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
     } else {
       await runWithConcurrency(guilds, guildRegistrationConcurrency, async (guild) => {
         try {
-          await rest.put(
-            Routes.applicationGuildCommands(appId, guild.id),
-            { body: [] }
-          );
+          await rest.put(Routes.applicationGuildCommands(appId, guild.id), { body: [] });
         } catch (err) {
           console.error(`Failed to clear guild commands for ${guild.id}:`, err);
         }
       });
     }
 
+    const summary = {
+      scope: commandRegistrationScope,
+      global: shouldRegisterGlobalCommands,
+      guild: shouldRegisterGuildCommands,
+      count: commandPayload.length,
+      fingerprint: buildCommandFingerprint(commandPayload),
+    };
+
     console.log(
-      `Slash commands registered (scope=${commandRegistrationScope}; global=${shouldRegisterGlobalCommands}; guild=${shouldRegisterGuildCommands}).`
+      `Slash commands registered (scope=${summary.scope}; global=${summary.global}; guild=${summary.guild}; count=${summary.count}; fingerprint=${summary.fingerprint}).`
     );
+    return summary;
   };
 
-  // ===== MESSAGE EVENTS =====
+  const refreshCommandsNow = async () => {
+    if (!client.user?.id) {
+      throw new Error('Client not ready yet; cannot refresh commands.');
+    }
+    assertUniqueCommandNames(commands);
+    const payload = commands.map((cmd) => cmd.data.toJSON());
+    const rest = new REST({ version: '10' }).setToken(config.DISCORD_TOKEN);
+    const summary = await registerSlashCommands(rest, client.user.id, payload);
+    return { ok: true, message: 'Commands refreshed', details: summary };
+  };
+
+  const adminOps = {
+    syncMarketsNow: async () => {
+      if (!isMarketsEnabled()) {
+        return { ok: false, message: 'Markets module disabled', details: {} };
+      }
+      const result = await runMarketsMaintenance();
+      return { ok: true, message: 'Markets sync completed', details: result };
+    },
+    refreshCommandsNow,
+    softRestartNow: async () => {
+      setTimeout(() => {
+        process.kill(process.pid, 'SIGTERM');
+      }, 150);
+      return { ok: true, message: 'Restart scheduled', details: { pid: process.pid } };
+    },
+  };
 
   client.on('messageCreate', async (message) => {
     await safeExecute('messageCreate', async () => {
@@ -133,7 +167,7 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
         if (optionIndex === -1) return;
         const poll = getPollByMessageId(message.id);
         if (!poll || poll.closed) return;
-        const userReactions = message.reactions.cache.filter(r => NUMBER_EMOJIS.includes(r.emoji.name));
+        const userReactions = message.reactions.cache.filter((r) => NUMBER_EMOJIS.includes(r.emoji.name));
         for (const r of userReactions.values()) {
           if (r.emoji.name !== emoji) {
             try { await r.users.remove(user.id); } catch {}
@@ -166,8 +200,6 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
     });
   });
 
-  // ===== INTERACTION EVENTS =====
-
   client.on('interactionCreate', async (interaction) => {
     await safeExecute('interactionCreate', async () => {
       await handleInteraction(interaction, {
@@ -179,8 +211,6 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
     });
   });
 
-  // ===== GUILD & MEMBER EVENTS =====
-
   client.on('guildCreate', async (guild) => {
     await safeExecute('guildCreate', async () => {
       console.log(`Joined new guild: ${guild.name}`);
@@ -188,10 +218,7 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
         try {
           const rest = new REST({ version: '10' }).setToken(config.DISCORD_TOKEN);
           const commandPayload = commands.map((cmd) => cmd.data.toJSON());
-          await rest.put(
-            Routes.applicationGuildCommands(client.user.id, guild.id),
-            { body: commandPayload }
-          );
+          await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: commandPayload });
           console.log(`Registered slash commands for new guild ${guild.id}.`);
         } catch (err) {
           console.error(`Failed to register commands for new guild ${guild.id}:`, err);
@@ -221,12 +248,10 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
       handleMemberJoin(member);
       try {
         if (member.guild.systemChannel) {
-          await member.guild.systemChannel.send(
-            `Welcome to ${member.guild.name}, ${member.user}! 👋`
-          );
+          await member.guild.systemChannel.send(`Welcome to ${member.guild.name}, ${member.user}! 👋`);
         }
-      } catch (err) {
-        // May not have permission
+      } catch {
+        // Ignore missing permissions.
       }
     });
   });
@@ -261,19 +286,17 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
     });
   });
 
-  // ===== READY EVENT =====
-
   client.once('clientReady', async () => {
     await safeExecute('ready', async () => {
       console.log(`Logged in as ${client.user.tag}`);
-      
-      // Register commands
-      const rest = new REST({ version: '10' }).setToken(config.DISCORD_TOKEN);
-      assertUniqueCommandNames(commands);
-      const commandPayload = commands.map(cmd => cmd.data.toJSON());
-      await registerSlashCommands(rest, client.user.id, commandPayload);
 
-      // Cache guild data
+      const summary = await refreshCommandsNow();
+      if (summary?.details) {
+        console.log(
+          `Command registry summary: scope=${summary.details.scope} count=${summary.details.count} fingerprint=${summary.details.fingerprint}`
+        );
+      }
+
       console.log('Caching guild data...');
       try {
         const envMode = (process.env.MEMORY_HYDRATE_MODE || '').toLowerCase();
@@ -293,7 +316,6 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
         console.error('Failed to cache guild data:', e);
       }
 
-      // Resume open polls
       try {
         const open = listOpenPolls();
         for (const poll of open) {
@@ -308,7 +330,6 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
             await channel.send({ content: `📊 Poll closed: ${poll.question}\n\n${lines.join('\n')}\n\nTotal votes: ${total}` });
             closePoll(poll.id);
           } else {
-            const delayMs = Math.max(0, remaining);
             const t = setTimeout(async () => {
               try {
                 const p = getPollByMessageId(poll.message_id);
@@ -325,7 +346,7 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
               } finally {
                 pollTimers.delete(poll.message_id);
               }
-            }, delayMs);
+            }, Math.max(0, remaining));
             pollTimers.set(poll.message_id, t);
           }
         }
@@ -353,7 +374,7 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
     });
   });
 
-  return () => {
+  const cleanup = () => {
     for (const timer of pollTimers.values()) {
       clearTimeout(timer);
     }
@@ -363,4 +384,6 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
       marketsMaintenanceInterval = null;
     }
   };
+
+  return { cleanup, adminOps };
 }

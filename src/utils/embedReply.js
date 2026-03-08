@@ -1,5 +1,6 @@
 const EMBED_DESC_LIMIT = 4096;
 const MAX_HEADER_LEN = 140;
+const EPHEMERAL_FLAG = 1 << 6;
 
 function normalizeHeader(value = '') {
   const header = String(value || '').trim();
@@ -81,15 +82,18 @@ export function wrapInteractionForEmbedReplies(interaction, { defaultTitle = 'Re
       if (!methodNames.has(String(prop)) || typeof value !== 'function') return value;
       return (...args) => {
         const [payload, ...rest] = args;
-        const normalized = String(prop) === 'deferReply'
-          ? (typeof payload === 'object' && payload ? { ...payload } : {})
-          : ensureEmbedPayload(payload, {
-            defaultTitle,
-            source: `interaction.${String(prop)}`,
-          });
-        // Guild UX policy: never hide command output behind ephemeral replies.
-        if (typeof target.inGuild === 'function' && target.inGuild()) {
-          normalized.ephemeral = false;
+        const normalized = (() => {
+          if (typeof payload === 'string') return { content: payload };
+          if (!payload || typeof payload !== 'object') return {};
+          return { ...payload };
+        })();
+
+        if (typeof normalized.ephemeral === 'boolean') {
+          if (normalized.ephemeral) {
+            const existingFlags = Number.isFinite(Number(normalized.flags)) ? Number(normalized.flags) : 0;
+            normalized.flags = existingFlags | EPHEMERAL_FLAG;
+          }
+          delete normalized.ephemeral;
         }
         return value.call(target, normalized, ...rest);
       };
@@ -98,23 +102,7 @@ export function wrapInteractionForEmbedReplies(interaction, { defaultTitle = 'Re
 }
 
 export function wrapMessageForEmbedReplies(message, { defaultTitle = 'Response' } = {}) {
-  return new Proxy(message, {
-    get(target, prop, receiver) {
-      if (prop === 'reply') {
-        const reply = Reflect.get(target, prop, receiver);
-        if (typeof reply !== 'function') return reply;
-        return (...args) => {
-          const [payload, ...rest] = args;
-          const normalized = ensureEmbedPayload(payload, {
-            defaultTitle,
-            source: 'message.reply',
-          });
-          return reply.call(target, normalized, ...rest);
-        };
-      }
-      return Reflect.get(target, prop, receiver);
-    },
-  });
+  return message;
 }
 
 export async function replyEmbed(interactionOrMessage, { embed, components = [], files = [], ephemeral, contentHeader = '' } = {}) {

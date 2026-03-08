@@ -4,7 +4,7 @@ import { hasInteractionAdminAccess, isSuperAdminUser } from '../utils/auth.js';
 import { wrapInteractionForEmbedReplies } from '../utils/embedReply.js';
 
 export async function handleInteraction(interaction, { inMemoryTurns, pollTimers, client, superAdminId }) {
-  const wrappedInteraction = wrapInteractionForEmbedReplies(interaction, { defaultTitle: 'Command Result' });
+  const wrappedInteraction = wrapInteractionForEmbedReplies(interaction);
   if (interaction.isAutocomplete()) {
     return;
   }

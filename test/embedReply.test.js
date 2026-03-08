@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildEmbed, ensureEmbedPayload } from '../src/utils/embedReply.js';
+import {
+  buildEmbed,
+  ensureEmbedPayload,
+  wrapInteractionForEmbedReplies,
+} from '../src/utils/embedReply.js';
 
 test('buildEmbed returns embed with description', () => {
   const embed = buildEmbed({
@@ -13,7 +17,7 @@ test('buildEmbed returns embed with description', () => {
   assert.ok(Array.isArray(embed.fields));
 });
 
-test('ensureEmbedPayload converts plain content into embeds', () => {
+test('ensureEmbedPayload converts plain content into embeds when explicitly used', () => {
   const payload = ensureEmbedPayload(
     { content: 'Primary output body' },
     { defaultTitle: 'Command Result', source: 'test' }
@@ -38,3 +42,20 @@ test('ensureEmbedPayload adds txt attachment on overflow', () => {
   assert.equal(payload.files[0].name, 'details.txt');
 });
 
+test('interaction wrapper preserves plain content and maps ephemeral to flags', async () => {
+  const seen = [];
+  const interaction = {
+    inGuild: () => true,
+    reply: async (payload) => {
+      seen.push(payload);
+      return payload;
+    },
+  };
+  const wrapped = wrapInteractionForEmbedReplies(interaction);
+  await wrapped.reply({ content: 'hello', ephemeral: true });
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].content, 'hello');
+  assert.equal(seen[0].ephemeral, undefined);
+  assert.ok((Number(seen[0].flags) & (1 << 6)) > 0);
+});

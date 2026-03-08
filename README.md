@@ -168,6 +168,13 @@ DMs are allowed for memory writes when the user has memory enabled.
 - Enable with `WEB_UI_ENABLED=1`.
 - Set auth with `WEB_UI_ADMIN_USER` and either `WEB_UI_ADMIN_PASSWORD_HASH` or `WEB_UI_ADMIN_PASSWORD`.
 - Optional host/port: `WEB_UI_HOST` (default `0.0.0.0`) and `WEB_UI_PORT` (default `8787`).
+- Includes admin actions to run a markets sync, refresh slash commands, and schedule a soft restart.
+- JSON endpoints:
+  - `GET /api/summary`
+  - `POST /api/admin/sync-markets`
+  - `POST /api/admin/refresh-commands`
+  - `POST /api/admin/restart`
+  - write endpoints require authenticated session + CSRF token.
 
 ### Videos
 - Reply to a video with `@BotName` or use `/ask` while replying; the bot will acknowledge video context. Advanced transcription is not enabled by default.

@@ -8,10 +8,9 @@ import { getReplyContext } from '../services/media.js';
 import { routeIntent } from '../services/intentRouter.js';
 import { shouldRecordMemoryMessage } from '../utils/helpers.js';
 import { tryHandleNaturalCommand } from '../commands/naturalCommandRouter.js';
-import { ensureEmbedPayload, wrapMessageForEmbedReplies } from '../utils/embedReply.js';
+import { ensureEmbedPayload } from '../utils/embedReply.js';
 
 export async function handleMessage({ client, message, inMemoryTurns }) {
-  const wrappedMessage = wrapMessageForEmbedReplies(message, { defaultTitle: 'Command Result' });
   if (message.author.bot) return;
 
   const isDirect = message.channel?.isDMBased?.() || message.guildId === null;
@@ -43,7 +42,7 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
 
   const content = isDirect ? message.content.trim() : mentioned ? stripMention(message.content, client.user.id) : message.content.trim();
 
-  const naturalHandled = await tryHandleNaturalCommand({ message: wrappedMessage, content });
+  const naturalHandled = await tryHandleNaturalCommand({ message, content });
   if (naturalHandled) {
     return;
   }
@@ -56,7 +55,7 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
       client,
     });
     if (intentReply) {
-      await wrappedMessage.reply({ content: intentReply });
+      await message.reply({ content: intentReply });
       return;
     }
   }
@@ -67,11 +66,11 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
     if (parsed) {
       const { question, options, duration } = parsed;
       if (options.length < 2) {
-        await wrappedMessage.reply('Need at least two options.');
+        await message.reply('Need at least two options.');
         return;
       }
       if (options.length > NUMBER_EMOJIS.length) {
-        await wrappedMessage.reply(`Max ${NUMBER_EMOJIS.length} options.`);
+        await message.reply(`Max ${NUMBER_EMOJIS.length} options.`);
         return;
       }
       const closeAt = Date.now() + duration;
@@ -125,8 +124,8 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
 
   const replyFn = async (text) => {
     const sent = isDirect 
-      ? await message.channel.send(ensureEmbedPayload({ content: text }, { defaultTitle: 'Response', source: 'handleMessage.replyFn.dm' }))
-      : await wrappedMessage.reply({ content: text });
+      ? await message.channel.send({ content: text })
+      : await message.reply({ content: text });
     trackReplySync({ userMessageId: message.id, botReplyId: sent.id });
     trackBotMessage(sent.id, message.channelId, message.guildId);
   };
@@ -203,7 +202,7 @@ export async function handleMessageUpdate({ client, newMessage, inMemoryTurns })
 
   const replyFn = async (text) => {
     const messageToEdit = await hydrated.channel.messages.fetch(replyId);
-    await messageToEdit.edit(ensureEmbedPayload({ content: text }, { defaultTitle: 'Response', source: 'handleMessage.update.edit' }));
+    await messageToEdit.edit({ content: text });
   };
   const typingFn = async () => {
     await hydrated.channel.sendTyping();
