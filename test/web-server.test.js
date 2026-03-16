@@ -35,7 +35,6 @@ test('web admin endpoints require auth and csrf for write actions', async (t) =>
         calls.refresh += 1;
         return { ok: true, message: 'Commands refreshed', details: { count: 5 } };
       },
-      syncMarketsNow: async () => ({ ok: true, message: 'sync', details: {} }),
       softRestartNow: async () => ({ ok: true, message: 'restart', details: {} }),
     },
   });

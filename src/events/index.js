@@ -19,10 +19,6 @@ import { NUMBER_EMOJIS } from '../utils/constants.js';
 import { commands } from '../commands/index.js';
 import { normalizeMediaFromMessage } from '../utils/media.js';
 import { setRecentReactionTarget } from '../services/reactionContext.js';
-import { runMarketsMaintenance } from '../services/markets/maintenance.js';
-import { getTitleEngineStatus } from '../services/markets/marketTitleService.js';
-import { isMarketsEnabled } from '../utils/features.js';
-import { ensureActiveSeason } from '../services/markets/store.js';
 
 function buildCommandFingerprint(commandPayload) {
   const json = JSON.stringify(commandPayload || []);
@@ -30,8 +26,6 @@ function buildCommandFingerprint(commandPayload) {
 }
 
 export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
-  let marketsMaintenanceInterval = null;
-
   const rawScope = (process.env.COMMAND_REGISTRATION_SCOPE || 'guild').toLowerCase();
   const commandRegistrationScope = ['global', 'guild', 'guilds', 'hybrid'].includes(rawScope)
     ? rawScope
@@ -120,13 +114,6 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
   };
 
   const adminOps = {
-    syncMarketsNow: async () => {
-      if (!isMarketsEnabled()) {
-        return { ok: false, message: 'Markets module disabled', details: {} };
-      }
-      const result = await runMarketsMaintenance();
-      return { ok: true, message: 'Markets sync completed', details: result };
-    },
     refreshCommandsNow,
     softRestartNow: async () => {
       setTimeout(() => {
@@ -355,27 +342,6 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
         console.error('Failed to resume polls', e);
       }
 
-      if (isMarketsEnabled()) {
-        ensureActiveSeason(Date.now());
-        const titleEngine = getTitleEngineStatus();
-        console.log(
-          `Markets title engine: mode=${titleEngine.mode}; ai=${titleEngine.aiEnabled ? 'on' : 'off'}; model=${titleEngine.model}; healthy=${titleEngine.healthy ? 'yes' : 'no'}`
-        );
-        const maintenanceMs = Number.parseInt(process.env.MARKETS_SYNC_MS || '60000', 10) || 60000;
-        marketsMaintenanceInterval = setInterval(async () => {
-          try {
-            const result = await runMarketsMaintenance();
-            if (result.rollover?.rolled || result.synced > 0 || result.settled > 0) {
-              console.log(
-                `Markets maintenance: season=${result.seasonId}, rolled=${result.rollover?.rolled ? 'yes' : 'no'}, synced=${result.synced}, settled=${result.settled}`
-              );
-            }
-          } catch (err) {
-            console.error('Markets maintenance job failed', err);
-          }
-        }, maintenanceMs);
-        marketsMaintenanceInterval.unref?.();
-      }
     });
   });
 
@@ -384,10 +350,6 @@ export function setupEvents({ client, config, inMemoryTurns, pollTimers }) {
       clearTimeout(timer);
     }
     pollTimers.clear();
-    if (marketsMaintenanceInterval) {
-      clearInterval(marketsMaintenanceInterval);
-      marketsMaintenanceInterval = null;
-    }
   };
 
   return { cleanup, adminOps };

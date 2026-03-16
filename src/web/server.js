@@ -1,8 +1,6 @@
 import crypto from 'node:crypto';
 import http from 'node:http';
 import { URL } from 'node:url';
-import { getNetWorthLeaderboard } from '../services/markets/leaderboardService.js';
-import { ensureActiveSeason, listCachedMarkets } from '../services/markets/store.js';
 
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
@@ -116,19 +114,12 @@ function json(res, status, payload) {
 }
 
 function buildSummary() {
-  const season = ensureActiveSeason(Date.now());
-  const markets = listCachedMarkets({ status: 'all', limit: 20 });
-  const leaderboard = getNetWorthLeaderboard(season.season_id, 10);
   return {
-    season,
-    markets,
-    leaderboard,
     runtime: {
       node: process.version,
       pid: process.pid,
       uptimeSeconds: Math.floor(process.uptime()),
       commandScope: process.env.COMMAND_REGISTRATION_SCOPE || 'guild',
-      marketsSyncMs: Number.parseInt(process.env.MARKETS_SYNC_MS || '60000', 10) || 60000,
     },
   };
 }
@@ -166,31 +157,6 @@ function renderLoginPage(message = '') {
 }
 
 function renderDashboard({ summary, csrfToken, message = '' }) {
-  const marketRows = summary.markets.length
-    ? summary.markets.map((row) => `
-      <tr>
-        <td class="mono">${htmlEscape(row.ticker)}</td>
-        <td>${htmlEscape(row.title)}</td>
-        <td>${htmlEscape(row.category || 'general')}</td>
-        <td>${htmlEscape(row.status || 'unknown')}</td>
-        <td>${Number.isFinite(Number(row.yes_price)) ? `${Math.round(Number(row.yes_price))}¢` : '—'}</td>
-        <td>${Number.isFinite(Number(row.no_price)) ? `${Math.round(Number(row.no_price))}¢` : '—'}</td>
-      </tr>
-    `).join('')
-    : '<tr><td colspan="6">No cached markets yet.</td></tr>';
-
-  const leaderboardRows = summary.leaderboard.length
-    ? summary.leaderboard.map((row, index) => `
-      <tr>
-        <td>${index + 1}</td>
-        <td class="mono">${htmlEscape(row.user_id)}</td>
-        <td>$${Number(row.net_worth || 0).toFixed(2)}</td>
-        <td>$${Number(row.realized_pnl || 0).toFixed(2)}</td>
-        <td>${Number(row.trades || 0)}</td>
-      </tr>
-    `).join('')
-    : '<tr><td colspan="5">No leaderboard entries yet.</td></tr>';
-
   const banner = message
     ? `<p style="padding:10px;background:#eef8ff;border:1px solid #b7ddff;border-radius:6px;">${htmlEscape(message)}</p>`
     : '';
@@ -221,10 +187,6 @@ function renderDashboard({ summary, csrfToken, message = '' }) {
   ${banner}
 
   <div class="card">
-    <form class="inline" method="post" action="/admin/sync-markets">
-      <input type="hidden" name="csrf_token" value="${csrfToken}" />
-      <button type="submit">Run Markets Sync Now</button>
-    </form>
     <form class="inline" method="post" action="/admin/refresh-commands">
       <input type="hidden" name="csrf_token" value="${csrfToken}" />
       <button type="submit">Refresh Slash Commands</button>
@@ -244,34 +206,11 @@ function renderDashboard({ summary, csrfToken, message = '' }) {
       <p>Uptime: <b>${summary.runtime.uptimeSeconds}s</b></p>
     </div>
     <div class="card">
-      <h2>Season</h2>
-      <p>ID: <b class="mono">${htmlEscape(summary.season.season_id)}</b></p>
-      <p>Starts: <b>${new Date(summary.season.starts_at).toISOString()}</b></p>
-      <p>Ends: <b>${new Date(summary.season.ends_at).toISOString()}</b></p>
-    </div>
-    <div class="card">
       <h2>Config</h2>
       <p>Command Scope: <b>${htmlEscape(summary.runtime.commandScope)}</b></p>
-      <p>Sync Interval: <b>${summary.runtime.marketsSyncMs} ms</b></p>
-      <p>Markets Enabled: <b>${htmlEscape(String(process.env.FEATURE_MARKETS_ENABLED || '1'))}</b></p>
     </div>
   </div>
 
-  <div class="card">
-    <h2>Cached Markets</h2>
-    <table>
-      <thead><tr><th>Ticker</th><th>Title</th><th>Category</th><th>Status</th><th>YES</th><th>NO</th></tr></thead>
-      <tbody>${marketRows}</tbody>
-    </table>
-  </div>
-
-  <div class="card">
-    <h2>Leaderboard (Net Worth)</h2>
-    <table>
-      <thead><tr><th>#</th><th>User</th><th>Net Worth</th><th>Realized PnL</th><th>Trades</th></tr></thead>
-      <tbody>${leaderboardRows}</tbody>
-    </table>
-  </div>
 </body>
 </html>`;
 }
@@ -404,9 +343,7 @@ export function startWebServer({ adminOps = {} } = {}) {
       }
 
       let result;
-      if (url.pathname === '/api/admin/sync-markets') {
-        result = await runAdminAction(adminOps.syncMarketsNow, 'sync-markets');
-      } else if (url.pathname === '/api/admin/refresh-commands') {
+      if (url.pathname === '/api/admin/refresh-commands') {
         result = await runAdminAction(adminOps.refreshCommandsNow, 'refresh-commands');
       } else if (url.pathname === '/api/admin/restart') {
         result = await runAdminAction(adminOps.softRestartNow, 'restart');
@@ -428,9 +365,7 @@ export function startWebServer({ adminOps = {} } = {}) {
       }
 
       let result;
-      if (url.pathname === '/admin/sync-markets') {
-        result = await runAdminAction(adminOps.syncMarketsNow, 'sync-markets');
-      } else if (url.pathname === '/admin/refresh-commands') {
+      if (url.pathname === '/admin/refresh-commands') {
         result = await runAdminAction(adminOps.refreshCommandsNow, 'refresh-commands');
       } else if (url.pathname === '/admin/restart') {
         result = await runAdminAction(adminOps.softRestartNow, 'restart');

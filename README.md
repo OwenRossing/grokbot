@@ -13,7 +13,6 @@ A production-ready Discord bot built with **discord.js v14** and Grok (OpenAI-co
 - Image support (attachments, embeds, and image URLs) with vision model routing.
 - Polls via reactions with auto-close and results.
 - Giphy GIF search with `/gif`.
-- Prediction markets (paper trading): browse, buy, portfolio, leaderboard, achievements.
 - Admin command to purge bot messages from channels with flexible timeframes.
 
 ## Setup
@@ -54,16 +53,6 @@ Optional:
 - `MEMORY_MAX_DAYS` (default: `45`)
 - `MEMORY_HYDRATE_MODE` (`full`, `light`, `off`; overrides NODE_ENV behavior)
 - `MEMORY_HYDRATE_MEMBER_LIMIT` (default: `1000`)
-- `FEATURE_MARKETS_ENABLED` (`1` to enable prediction markets module)
-- `KALSHI_API_BASE_URL` (default: `https://api.elections.kalshi.com`)
-- `KALSHI_API_KEY` (optional for read-only public market requests)
-- `MARKETS_SYNC_MS` (default: `60000`, background sync cadence)
-- `PAPER_STARTING_BALANCE` (default: `10000`)
-- `MARKETS_TITLE_AI_ENABLED` (`1` enables optional Ollama title polishing; default `0`)
-- `MARKETS_TITLE_REFRESH_MS` (default: `21600000`, display-title refresh cadence)
-- `OLLAMA_BASE_URL` (default: `http://127.0.0.1:11434`)
-- `OLLAMA_MODEL` (default: `qwen2.5:0.5b-instruct`)
-- `OLLAMA_TIMEOUT_MS` (default: `1500`)
 
 **AI Intelligence Enhancement Parameters:**
 - `LLM_TEMPERATURE` (default: `0.3`) - Controls randomness (0.0-2.0). Lower = more focused, Higher = more creative
@@ -101,8 +90,6 @@ Replying to another message with an image also works:
 /poll question:"Best lunch?" options:"Pizza|Tacos|Sushi" duration:2h
 /gif query:"vibes"
 /do instruction:"enable memory for #general"
-/markets list
-/bet buy ticker:... side:yes qty:5
 ```
 
 The `ghost` parameter controls message visibility:
@@ -156,28 +143,13 @@ DMs are allowed for memory writes when the user has memory enabled.
 ### GIFs
 - Search Giphy with `/gif query:"cats"` (requires `GIPHY_API_KEY`)
 
-### Prediction Markets (Primary)
-- Browse markets: `/markets list`
-- View market detail: `/markets view ticker:<ticker>`
-- Place paper trade: `/bet buy ticker:<ticker> side:<yes|no> qty:<contracts>`
-- View portfolio: `/portfolio [user]`
-- View leaderboard: `/leaderboard type:net_worth`
-- View achievements: `/achievements [user]`
-- Responses include a paper-trading disclaimer (no real money, no financial advice).
-- Market titles are cleaned for readability with deterministic rules; optional local Ollama rewrite is best-effort and never required.
-
-### TCG Status
-- TCG commands are removed from active runtime and slash registration.
-- Prediction markets are now the primary game surface.
-
 ### Local Web UI (LAN)
 - Enable with `WEB_UI_ENABLED=1`.
 - Set auth with `WEB_UI_ADMIN_USER` and either `WEB_UI_ADMIN_PASSWORD_HASH` or `WEB_UI_ADMIN_PASSWORD`.
 - Optional host/port: `WEB_UI_HOST` (default `0.0.0.0`) and `WEB_UI_PORT` (default `8787`).
-- Includes admin actions to run a markets sync, refresh slash commands, and schedule a soft restart.
+- Includes admin actions to refresh slash commands and schedule a soft restart.
 - JSON endpoints:
   - `GET /api/summary`
-  - `POST /api/admin/sync-markets`
   - `POST /api/admin/refresh-commands`
   - `POST /api/admin/restart`
   - write endpoints require authenticated session + CSRF token.

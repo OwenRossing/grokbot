@@ -12,14 +12,6 @@ import {
   executeDoCommand,
   executeSearchCommand,
 } from './handlers.js';
-import {
-  executeAchievementsCommand,
-  executeBetCommand,
-  executeLeaderboardCommand,
-  executeMarketsCommand,
-  executePortfolioCommand,
-} from './marketHandlers.js';
-import { isMarketsEnabled } from '../utils/features.js';
 
 export function buildInteractionCommandRouter({ inMemoryTurns, pollTimers, client, superAdminId }) {
   const router = {
@@ -62,30 +54,7 @@ export function buildInteractionCommandRouter({ inMemoryTurns, pollTimers, clien
     search: {
       execute: (interaction) => executeSearchCommand(interaction),
     },
-    markets: {
-      execute: (interaction) => executeMarketsCommand(interaction),
-    },
-    bet: {
-      execute: (interaction) => executeBetCommand(interaction),
-    },
-    portfolio: {
-      execute: (interaction) => executePortfolioCommand(interaction),
-    },
-    leaderboard: {
-      execute: (interaction) => executeLeaderboardCommand(interaction),
-    },
-    achievements: {
-      execute: (interaction) => executeAchievementsCommand(interaction),
-    },
   };
-
-  if (!isMarketsEnabled()) {
-    delete router.markets;
-    delete router.bet;
-    delete router.portfolio;
-    delete router.leaderboard;
-    delete router.achievements;
-  }
 
   return router;
 }
