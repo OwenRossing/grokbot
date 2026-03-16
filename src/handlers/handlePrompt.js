@@ -8,15 +8,16 @@ import { fetchImageAsDataUrl, resolveDirectMediaUrl } from '../services/media.js
 import { buildContextBundle } from '../services/contextPlanner.js';
 import { searchWeb, shouldAutoWebSearch } from '../services/webSearch/index.js';
 import { getLLMResponse } from '../llm.js';
+import { buildConversationTurnKey } from '../services/socialContext.js';
 import { MAX_IMAGES } from '../utils/constants.js';
 import { containsHateSpeech } from '../utils/validators.js';
 import { shouldRecordMemoryMessage } from '../utils/helpers.js';
 import { getCopy } from '../copy.js';
 
-function addTurn(inMemoryTurns, userId, role, content) {
-  const turns = inMemoryTurns.get(userId) || [];
+export function addTurn(inMemoryTurns, conversationKey, role, content) {
+  const turns = inMemoryTurns.get(conversationKey) || [];
   const updated = [...turns, { role, content }].slice(-6);
-  inMemoryTurns.set(userId, updated);
+  inMemoryTurns.set(conversationKey, updated);
   return updated;
 }
 
@@ -26,6 +27,7 @@ export async function handlePrompt({
   channelId,
   prompt,
   reply,
+  replyContext,
   replyContextText,
   imageUrls,
   videoUrls,
@@ -169,9 +171,16 @@ export async function handlePrompt({
     displayName,
     preferredName: settings.preferred_name || '',
     pronouns: settings.pronouns || '',
+    currentUserId: userId,
   };
 
-  const recentTurns = allowMemory ? addTurn(inMemoryTurns, userId, 'user', effectivePrompt || '...') : [];
+  const conversationKey = buildConversationTurnKey({
+    channelType: channelType || (guildId ? 'guild' : 'dm'),
+    guildId,
+    channelId,
+    userId,
+  });
+  const recentTurns = allowMemory ? addTurn(inMemoryTurns, conversationKey, 'user', effectivePrompt || '...') : [];
 
   if (onStatus) {
     await onStatus('Composing response', {
@@ -190,7 +199,8 @@ export async function handlePrompt({
     profileSummary: contextBundle.profileSummary,
     recentTurns,
     userContent: effectivePrompt,
-    replyContext: replyContextText,
+    structuredReplyContext: replyContext,
+    replyContextText,
     imageInputs,
     recentUserMessages: contextBundle.recentUserMessages,
     recentChannelMessages: contextBundle.recentChannelMessages,
@@ -205,7 +215,7 @@ export async function handlePrompt({
   });
 
   if (allowMemory) {
-    addTurn(inMemoryTurns, userId, 'assistant', response);
+    addTurn(inMemoryTurns, conversationKey, 'assistant', response);
   }
 
   await reply(response);

@@ -6,6 +6,7 @@ import { NUMBER_EMOJIS } from '../utils/constants.js';
 import { createPoll, getPollByMessageId, recordVote, removeVote } from '../polls.js';
 import { getReplyContext } from '../services/media.js';
 import { routeIntent } from '../services/intentRouter.js';
+import { buildReplySearchText } from '../services/socialContext.js';
 import { shouldRecordMemoryMessage } from '../utils/helpers.js';
 import { tryHandleNaturalCommand } from '../commands/naturalCommandRouter.js';
 import { ensureEmbedPayload } from '../utils/embedReply.js';
@@ -99,9 +100,7 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
   }
 
   const replyContext = await getReplyContext(message);
-  const replyContextText = replyContext
-    ? `Reply context from ${replyContext.author}: ${replyContext.text || '[no text]'}${(replyContext.videos?.length ? ' [video referenced]' : '')}`
-    : '';
+  const replyContextText = buildReplySearchText(replyContext);
   
   // Collect image URLs (GIFs remain as URLs so the model can fetch them directly)
   const imageUrls = [
@@ -139,6 +138,7 @@ export async function handleMessage({ client, message, inMemoryTurns }) {
     channelId: message.channelId,
     prompt: content,
     reply: replyFn,
+    replyContext,
     replyContextText,
     imageUrls,
     videoUrls,
@@ -188,9 +188,7 @@ export async function handleMessageUpdate({ client, newMessage, inMemoryTurns })
     ? hydrated.content.trim()
     : stripMention(hydrated.content, client.user.id);
   const replyContext = await getReplyContext(hydrated);
-  const replyContextText = replyContext
-    ? `Reply context from ${replyContext.author}: ${replyContext.text || '[no text]'}`
-    : '';
+  const replyContextText = buildReplySearchText(replyContext);
   const imageUrls = [
     ...getMessageImageUrls(hydrated),
     ...(replyContext?.images || []),
@@ -214,6 +212,7 @@ export async function handleMessageUpdate({ client, newMessage, inMemoryTurns })
     channelId: hydrated.channelId,
     prompt: content,
     reply: replyFn,
+    replyContext,
     replyContextText,
     imageUrls,
     videoUrls: [],

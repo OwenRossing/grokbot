@@ -219,6 +219,49 @@ export async function resolveDirectMediaUrl(u, giphyApiKey) {
   return null;
 }
 
+function getMessageAuthorDisplayName(message) {
+  return (
+    message.member?.displayName ||
+    message.author?.globalName ||
+    message.author?.username ||
+    'Unknown'
+  );
+}
+
+function normalizeReplyWindowMessage(message, { isReferenceTarget = false } = {}) {
+  if (!message) return null;
+  return {
+    id: message.id,
+    authorId: message.author?.id || '',
+    authorUsername: message.author?.username || 'Unknown',
+    authorDisplayName: getMessageAuthorDisplayName(message),
+    text: message.content?.trim() || '',
+    createdTimestamp: Number(message.createdTimestamp) || 0,
+    isReferenceTarget,
+  };
+}
+
+async function getReplyWindow(channel, replyId, referenced) {
+  try {
+    const [beforeCollection, afterCollection] = await Promise.all([
+      channel.messages.fetch({ limit: 2, before: replyId }),
+      channel.messages.fetch({ limit: 2, after: replyId }),
+    ]);
+
+    return [
+      ...[...beforeCollection.values()]
+        .sort((a, b) => Number(a.createdTimestamp || 0) - Number(b.createdTimestamp || 0))
+        .map((message) => normalizeReplyWindowMessage(message)),
+      normalizeReplyWindowMessage(referenced, { isReferenceTarget: true }),
+      ...[...afterCollection.values()]
+        .sort((a, b) => Number(a.createdTimestamp || 0) - Number(b.createdTimestamp || 0))
+        .map((message) => normalizeReplyWindowMessage(message)),
+    ].filter(Boolean);
+  } catch {
+    return [normalizeReplyWindowMessage(referenced, { isReferenceTarget: true })].filter(Boolean);
+  }
+}
+
 export async function searchGiphyGif(query, giphyApiKey) {
   if (!giphyApiKey) {
     console.warn('GIPHY_API_KEY not set — Giphy GIFs disabled');
@@ -252,10 +295,14 @@ export async function getReplyContext(message) {
     const text = referenced.content?.trim() || '';
     const { normalizeMediaFromMessage } = await import('../utils/media.js');
     const media = normalizeMediaFromMessage(referenced);
+    const messages = await getReplyWindow(message.channel, replyId, referenced);
     return {
-      author: referenced.author?.username || 'Unknown',
+      authorId: referenced.author?.id || '',
+      authorUsername: referenced.author?.username || 'Unknown',
+      authorDisplayName: getMessageAuthorDisplayName(referenced),
       text,
       media,
+      messages,
     };
   } catch {
     return null;

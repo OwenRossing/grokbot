@@ -2,6 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getCopy } from './copy.js';
+import { buildReplyContextBlock } from './services/socialContext.js';
 import { sanitizeUserTextForLlm } from './utils/sanitizeForLlm.js';
 
 const DEFAULT_MODEL = process.env.GROK_MODEL || 'grok-4-1-fast-reasoning-latest';
@@ -80,7 +81,8 @@ function buildMessages({
   profileSummary,
   recentTurns,
   userContent,
-  replyContext,
+  structuredReplyContext,
+  replyContextText,
   imageInputs,
   recentUserMessages,
   recentChannelMessages,
@@ -124,7 +126,14 @@ function buildMessages({
 
   if (serverContext) contextBlocks.push(`Server info:\n${serverContext}`);
   if (userContext) contextBlocks.push(`User info:\n${userContext}`);
-  if (replyContext) contextBlocks.push(replyContext);
+  if (structuredReplyContext) {
+    contextBlocks.push(buildReplyContextBlock(structuredReplyContext, {
+      id: contextStack?.currentUserId || '',
+      displayName: contextStack?.displayName || '',
+    }));
+  } else if (replyContextText) {
+    contextBlocks.push(`Reply context:\n${replyContextText}`);
+  }
   if (profileSummary) contextBlocks.push(`User profile summary: ${profileSummary}`);
   if (recentUserMessages?.length) {
     const formatted = recentUserMessages.map((msg) => `- ${msg}`).join('\n');
@@ -179,7 +188,8 @@ async function callOnce({
   profileSummary,
   recentTurns,
   userContent,
-  replyContext,
+  structuredReplyContext,
+  replyContextText,
   imageInputs,
   recentUserMessages,
   recentChannelMessages,
@@ -205,7 +215,8 @@ async function callOnce({
       profileSummary,
       recentTurns,
       userContent,
-      replyContext,
+      structuredReplyContext,
+      replyContextText,
       imageInputs,
       recentUserMessages,
       recentChannelMessages,
@@ -257,7 +268,8 @@ export async function getLLMResponse({
   profileSummary,
   recentTurns,
   userContent,
-  replyContext,
+  structuredReplyContext,
+  replyContextText,
   imageInputs,
   recentUserMessages,
   recentChannelMessages,
@@ -276,7 +288,8 @@ export async function getLLMResponse({
       profileSummary,
       recentTurns,
       userContent,
-      replyContext,
+      structuredReplyContext,
+      replyContextText,
       imageInputs,
       recentUserMessages,
       recentChannelMessages,
@@ -301,7 +314,8 @@ export async function getLLMResponse({
         profileSummary,
         recentTurns,
         userContent,
-        replyContext,
+        structuredReplyContext,
+        replyContextText,
         imageInputs,
         recentUserMessages,
         recentChannelMessages,
